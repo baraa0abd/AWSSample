@@ -13,9 +13,10 @@ mkdir -p "$HOME/.config/sops/age" "$HOME/.ssh" "$HOME/.aws"
 # Temporary credentials only; they are never written to disk or printed.
 creds=()
 if command -v aws >/dev/null && exported=$(aws configure export-credentials --format env-no-export 2>/dev/null); then
+  # tr: aws.exe on Windows ends lines with CRLF, and a stray CR corrupts the credential.
   while IFS= read -r line; do
-    [ -n "$line" ] && creds+=(-e "${line%$'\r'}")
-  done <<<"$exported"
+    [ -n "$line" ] && creds+=(-e "$line")
+  done < <(printf '%s\n' "$exported" | tr -d '\r')
 fi
 
 tty=()
