@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-ENV="${ENV:?set ENV to dev or prod}"
+ENV="${ENV:?set ENV to dev, prod or local}"
 key_file="${SOPS_AGE_KEY_FILE:-$HOME/.config/sops/age/keys.txt}"
 
 if [ ! -f "$key_file" ]; then

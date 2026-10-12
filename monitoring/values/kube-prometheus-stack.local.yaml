@@ -1,0 +1,14 @@
+# Local sample: short retention, small volume.
+prometheus:
+  prometheusSpec:
+    retention: 2d
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          resources:
+            requests:
+              storage: 5Gi
+# K3s-in-Docker cannot share the host root mount that node-exporter normally uses.
+prometheus-node-exporter:
+  hostRootFsMount:
+    enabled: false

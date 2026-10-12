@@ -1,0 +1,7 @@
+# Local sample: one day of logs.
+loki:
+  limits_config:
+    retention_period: 24h
+singleBinary:
+  persistence:
+    size: 2Gi

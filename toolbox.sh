@@ -23,7 +23,10 @@ tty=()
 [ -t 0 ] && tty=(-it)
 # pwd -W / MSYS_NO_PATHCONV: hand Docker real Windows paths when run from Git Bash.
 host_path() { (cd "$1" && (pwd -W 2>/dev/null || pwd)); }
-MSYS_NO_PATHCONV=1 docker run --rm "${tty[@]}" "${creds[@]}" \
+# TOOLBOX_NETWORK joins another container's network (used by the local sample to reach K3s).
+net=()
+[ -n "${TOOLBOX_NETWORK:-}" ] && net=(--network "$TOOLBOX_NETWORK")
+MSYS_NO_PATHCONV=1 docker run --rm "${tty[@]}" "${creds[@]}" "${net[@]}" -e ENV="${ENV:-dev}" \
   -v "$(host_path .):/repo" \
   -v infra-toolbox-home:/root \
   -v "$(host_path "$HOME/.ssh"):/ssh-host:ro" \

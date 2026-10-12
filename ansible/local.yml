@@ -1,0 +1,49 @@
+---
+# Configuration step of the local sample (docs/LOCAL.md). The cloud playbook is site.yml: it
+# hardens real VMs over SSH, which Docker "nodes" cannot take. This one does the cluster-level
+# part through the Kubernetes API and, like site.yml, reports changed=0 on a second run.
+- name: Configure the local K3s cluster
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Wait for the Kubernetes API
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: 6443
+        timeout: 180
+
+    - name: Wait until every expected node has registered
+      ansible.builtin.command: kubectl get nodes -o name
+      register: local_nodes
+      changed_when: false
+      retries: 30
+      delay: 5
+      until: local_nodes.stdout_lines | length == (k3s_agent_nodes | length) + 1
+
+    - name: Wait for all nodes to be Ready
+      ansible.builtin.command: kubectl wait --for=condition=Ready node --all --timeout=180s
+      changed_when: false
+
+    - name: Label agent nodes as workers
+      ansible.builtin.command: kubectl label node {{ item }} node-role.kubernetes.io/worker=true --overwrite
+      register: local_label
+      changed_when: "'not labeled' not in local_label.stdout"
+      loop: "{{ k3s_agent_nodes }}"
+
+    - name: Wait for the built-in components (DNS, metrics, ingress)
+      ansible.builtin.command: kubectl -n kube-system rollout status deployment/{{ item }} --timeout=240s
+      changed_when: false
+      retries: 12
+      delay: 10
+      register: local_rollout
+      until: local_rollout.rc == 0
+      loop: [coredns, metrics-server, traefik]
+
+    - name: Show the cluster
+      ansible.builtin.command: kubectl get nodes -o wide
+      register: local_cluster
+      changed_when: false
+
+    - name: Cluster nodes
+      ansible.builtin.debug:
+        msg: "{{ local_cluster.stdout_lines }}"
