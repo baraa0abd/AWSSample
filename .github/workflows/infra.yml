@@ -4,10 +4,10 @@ name: infra
 # required reviewers. AWS auth is OIDC only (see infra/bootstrap/oidc.sh): no access keys exist.
 on:
   pull_request:
-    paths: ["infra/**", ".github/workflows/infra.yml"]
+    paths: ["infra/**", "scripts/ci-preflight.sh", ".github/workflows/infra.yml"]
   push:
     branches: [main]
-    paths: ["infra/**", ".github/workflows/infra.yml"]
+    paths: ["infra/**", "scripts/ci-preflight.sh", ".github/workflows/infra.yml"]
   workflow_dispatch:
     inputs:
       environment:
@@ -21,17 +21,23 @@ permissions:
 
 env:
   TOFU_VERSION: 1.13.0
-  AWS_REGION: ${{ vars.AWS_REGION }}
   TF_IN_AUTOMATION: "true"
-  TF_VAR_project_name: ${{ vars.PROJECT }}
-  TF_VAR_region: ${{ vars.AWS_REGION }}
-  TF_VAR_allowed_admin_cidrs: ${{ vars.ADMIN_CIDRS }} # HCL list, e.g. ["203.0.113.7/32"]
-  TF_VAR_ssh_public_key: ${{ vars.SSH_PUBLIC_KEY }}
-  BACKEND_ARGS: >-
-    -backend-config=bucket=${{ vars.TFSTATE_BUCKET }}
-    -backend-config=region=${{ vars.AWS_REGION }}
 
 jobs:
+  cloud-status:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: report cloud infrastructure mode
+        env:
+          AWS_ENABLED: ${{ vars.AWS_ENABLED }}
+        run: |
+          if [ "$AWS_ENABLED" = true ]; then
+            echo 'AWS plan/apply enabled; configuration will be validated before AWS authentication.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'AWS plan/apply disabled. Static checks still run. Configure AWS and set AWS_ENABLED=true to provision.' \
+              >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   lint:
     runs-on: ubuntu-24.04
     steps:
@@ -59,9 +65,20 @@ jobs:
         run: pipx run checkov==3.3.27 -d infra --config-file infra/.checkov.yaml
 
   plan:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && vars.AWS_ENABLED == 'true'
     needs: lint
     runs-on: ubuntu-24.04
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      TF_VAR_project_name: ${{ vars.PROJECT }}
+      TF_VAR_region: ${{ vars.AWS_REGION }}
+      TF_VAR_allowed_admin_cidrs: ${{ vars.ADMIN_CIDRS }}
+      TF_VAR_ssh_public_key: ${{ vars.SSH_PUBLIC_KEY }}
+      BACKEND_ARGS: >-
+        -backend-config=bucket=${{ vars.TFSTATE_BUCKET }}
+        -backend-config=region=${{ vars.AWS_REGION }}
+      AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+      TFSTATE_BUCKET: ${{ vars.TFSTATE_BUCKET }}
     permissions:
       contents: read
       id-token: write # OIDC token for AWS
@@ -72,6 +89,8 @@ jobs:
         environment: [dev, prod]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: validate AWS configuration
+        run: bash scripts/ci-preflight.sh infra
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
@@ -81,6 +100,7 @@ jobs:
           tofu_version: ${{ env.TOFU_VERSION }}
           tofu_wrapper: false
       - name: plan
+        id: plan
         working-directory: infra/environments/${{ matrix.environment }}
         run: |
           # shellcheck disable=SC2086  # BACKEND_ARGS is several arguments on purpose
@@ -88,7 +108,7 @@ jobs:
           set -o pipefail
           tofu plan -input=false -no-color -lock=false | tee plan.txt
       - name: comment plan on the PR
-        if: always()
+        if: always() && steps.plan.outcome != 'skipped'
         working-directory: infra/environments/${{ matrix.environment }}
         env:
           GH_TOKEN: ${{ github.token }}
@@ -104,9 +124,20 @@ jobs:
           gh pr comment "$PR_NUMBER" --body-file comment.md
 
   apply:
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && vars.AWS_ENABLED == 'true'
     needs: lint
     runs-on: ubuntu-24.04
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      TF_VAR_project_name: ${{ vars.PROJECT }}
+      TF_VAR_region: ${{ vars.AWS_REGION }}
+      TF_VAR_allowed_admin_cidrs: ${{ vars.ADMIN_CIDRS }}
+      TF_VAR_ssh_public_key: ${{ vars.SSH_PUBLIC_KEY }}
+      BACKEND_ARGS: >-
+        -backend-config=bucket=${{ vars.TFSTATE_BUCKET }}
+        -backend-config=region=${{ vars.AWS_REGION }}
+      AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+      TFSTATE_BUCKET: ${{ vars.TFSTATE_BUCKET }}
     # Manual approval: configure "Required reviewers" on the dev/prod GitHub environments.
     # A push to main only ever targets dev; prod is applied by manual dispatch.
     environment: ${{ inputs.environment || 'dev' }}
@@ -116,6 +147,8 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: validate AWS configuration
+        run: bash scripts/ci-preflight.sh infra
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}

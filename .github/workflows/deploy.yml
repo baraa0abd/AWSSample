@@ -27,6 +27,15 @@ jobs:
       SG_NAME: ${{ vars.PROJECT }}-${{ inputs.environment }}-nodes-sg
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: validate AWS and cluster configuration
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+          PROJECT: ${{ vars.PROJECT }}
+          KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+        run: bash scripts/ci-preflight.sh deploy
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: v3.19.0

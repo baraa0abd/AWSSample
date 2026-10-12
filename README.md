@@ -120,11 +120,19 @@ Promote the same published image tag between environments. Local builds default 
 
 ## GitHub Actions setup
 
+Fresh clones run validation and image publishing without AWS. Cloud plan/apply and deployment
+jobs are skipped until repository variable `AWS_ENABLED` is set to `true`; workflow summaries
+report this mode explicitly. Static infrastructure checks do not require cloud variables.
+Complete the setup below before enabling cloud jobs. Enabling them restores automatic dev
+provisioning and application promotion through dev and prod.
+
 1. Run `PROJECT=<project> GITHUB_REPO=baraa0abd/AWSSample bash infra/bootstrap/oidc.sh` from an authenticated workstation.
 2. Set repository variables `AWS_ROLE_ARN`, `TFSTATE_BUCKET`, `PROJECT`, `AWS_REGION`, `ADMIN_CIDRS` (HCL list), and `SSH_PUBLIC_KEY`.
 3. Create GitHub environments `dev` and `prod`; configure required reviewers where approval is needed. Approval gates depend on these protection rules.
 4. Per environment, set secrets `KUBECONFIG_B64`, `SOPS_AGE_KEY`, and `GHCR_PULL_TOKEN` (package-read token). Optional variables: `DOMAIN`, `ACME_EMAIL`.
 5. Commit your SOPS-encrypted environment values and public recipient configuration using the [secrets guide](secrets/README.md).
+6. Set repository variable `AWS_ENABLED=true` after both environments are ready. Cloud jobs
+   validate required settings before authenticating; missing configuration fails with named inputs.
 
 | Workflow | Behavior |
 |---|---|

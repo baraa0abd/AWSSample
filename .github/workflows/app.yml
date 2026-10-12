@@ -4,10 +4,10 @@ name: app
 # the prod environment's required reviewers (the manual gate).
 on:
   pull_request:
-    paths: ["app/**", "k8s/**", "scripts/**", ".github/workflows/app.yml"]
+    paths: ["app/**", "k8s/**", "scripts/**", ".github/workflows/app.yml", ".github/workflows/deploy.yml"]
   push:
     branches: [main]
-    paths: ["app/**", "k8s/**", "scripts/**", ".github/workflows/app.yml"]
+    paths: ["app/**", "k8s/**", "scripts/**", ".github/workflows/app.yml", ".github/workflows/deploy.yml"]
 
 permissions:
   contents: read
@@ -19,6 +19,20 @@ env:
   SOPS_VERSION: v3.13.3
 
 jobs:
+  cloud-status:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: report cloud deployment mode
+        env:
+          AWS_ENABLED: ${{ vars.AWS_ENABLED }}
+        run: |
+          if [ "$AWS_ENABLED" = true ]; then
+            echo 'AWS deployment enabled; environment configuration will be validated.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'AWS deployment disabled. Tests and image publishing still run. Configure AWS and set AWS_ENABLED=true to deploy.' \
+              >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   test:
     runs-on: ubuntu-24.04
     steps:
@@ -67,7 +81,7 @@ jobs:
         run: bash scripts/build.sh
 
   deploy-dev:
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && vars.AWS_ENABLED == 'true'
     needs: build
     uses: ./.github/workflows/deploy.yml
     with:
