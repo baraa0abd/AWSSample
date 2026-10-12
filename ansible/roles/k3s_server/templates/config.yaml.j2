@@ -1,0 +1,17 @@
+# {{ ansible_managed }}
+# Embedded etcd even with one server: gives real snapshots and lets more servers join later (HA).
+cluster-init: true
+node-ip: {{ k3s_server_node_ip }}
+node-external-ip: {{ k3s_server_public_address }}
+tls-san:
+{% for san in k3s_server_tls_sans %}
+  - {{ san }}
+{% endfor %}
+write-kubeconfig-mode: "0600"
+secrets-encryption: true
+# local-path PVs live on the managed data disk, not the OS disk.
+default-local-storage-path: {{ k3s_server_local_storage_path }}
+etcd-snapshot-schedule-cron: "{{ k3s_server_snapshot_cron }}"
+etcd-snapshot-retention: {{ k3s_server_snapshot_retention }}
+# Nothing is disabled: Traefik (ingress), ServiceLB (binds 80/443 on the node),
+# local-path (PVs) and metrics-server (HPA) are all used.

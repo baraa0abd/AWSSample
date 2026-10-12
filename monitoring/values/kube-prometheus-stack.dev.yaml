@@ -1,0 +1,5 @@
+# dev: 15 days of metrics.
+prometheus:
+  prometheusSpec:
+    retention: 15d
+    retentionSize: 18GB

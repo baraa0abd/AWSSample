@@ -1,0 +1,79 @@
+# kube-prometheus-stack: Prometheus + Alertmanager + Grafana + node-exporter + kube-state-metrics.
+fullnameOverride: kps
+
+# K3s runs these components inside one process bound to localhost. Scraping them would only
+# produce permanently-down targets and false alerts; kubelet + apiserver metrics cover the cluster.
+kubeControllerManager: { enabled: false }
+kubeScheduler: { enabled: false }
+kubeProxy: { enabled: false }
+kubeEtcd: { enabled: false }
+defaultRules:
+  rules:
+    etcd: false
+    kubeControllerManager: false
+    kubeProxy: false
+    kubeSchedulerAlerting: false
+    kubeSchedulerRecording: false
+
+prometheus:
+  prometheusSpec:
+    # Pick up ServiceMonitors / PrometheusRules from every namespace, not only this release's.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    resources:
+      requests: { cpu: 100m, memory: 512Mi }
+      limits: { memory: 1536Mi }
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: local-path
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 20Gi
+
+alertmanager:
+  alertmanagerSpec:
+    storage:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: local-path
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 1Gi
+
+grafana:
+  # Not exposed: no ingress. Reach it with `kubectl port-forward` (see docs/RUNBOOK.md).
+  ingress: { enabled: false }
+  # adminPassword is supplied from the SOPS-encrypted secrets file at install time.
+  # Stateless on purpose: datasources and dashboards are all provisioned from this repo.
+  persistence: { enabled: false }
+  additionalDataSources:
+    - name: Loki
+      type: loki
+      uid: loki
+      access: proxy
+      url: http://loki:3100
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+        - name: community
+          orgId: 1
+          folder: Community
+          type: file
+          disableDeletion: true
+          options:
+            path: /var/lib/grafana/dashboards/community
+  # Community dashboards pinned by revision. Cluster dashboards ship with the chart;
+  # app and logs dashboards are in monitoring/dashboards/.
+  dashboards:
+    community:
+      node-exporter-full: { gnetId: 1860, revision: 45, datasource: Prometheus }
+      k3s-cluster: { gnetId: 15282, revision: 1, datasource: Prometheus }

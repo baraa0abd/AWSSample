@@ -1,0 +1,4 @@
+# dev: 7 days of logs.
+loki:
+  limits_config:
+    retention_period: 168h

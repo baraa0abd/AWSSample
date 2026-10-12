@@ -1,0 +1,60 @@
+---
+# The join token never leaves memory: read from the server, written straight to the agent's
+# root-only config, hidden from logs and diffs.
+- name: Read the node token from the server
+  ansible.builtin.slurp:
+    src: /var/lib/rancher/k3s/server/node-token
+  register: k3s_agent_token
+  delegate_to: "{{ k3s_agent_server_host }}"
+  run_once: true
+  no_log: true
+
+- name: Create K3s config directory
+  ansible.builtin.file:
+    path: /etc/rancher/k3s
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Write K3s agent config
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: /etc/rancher/k3s/config.yaml
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  diff: false
+  register: k3s_agent_config
+
+- name: Download the pinned K3s installer
+  ansible.builtin.get_url:
+    url: "{{ k3s_agent_installer_url }}"
+    dest: "{{ k3s_agent_installer_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Check installed K3s version
+  ansible.builtin.command: k3s --version
+  register: k3s_agent_installed
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Install K3s agent
+  ansible.builtin.command: "{{ k3s_agent_installer_path }}"
+  environment:
+    INSTALL_K3S_VERSION: "{{ k3s_agent_version }}"
+    INSTALL_K3S_EXEC: agent
+  when: k3s_agent_version not in (k3s_agent_installed.stdout | default(''))
+  changed_when: true
+  register: k3s_agent_install
+
+- name: Enable K3s agent
+  ansible.builtin.systemd_service:
+    name: k3s-agent
+    enabled: true
+    # A fresh install already started it with this config; only restart for later config changes.
+    state: "{{ 'restarted' if (k3s_agent_config is changed and k3s_agent_install is skipped) else 'started' }}"

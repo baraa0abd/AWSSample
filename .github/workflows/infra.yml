@@ -1,0 +1,131 @@
+name: infra
+
+# PR: lint + plan (posted as a comment). main / manual: plan + apply behind the environment's
+# required reviewers. Azure auth is OIDC only (see infra/bootstrap/oidc.sh): no client secret exists.
+on:
+  pull_request:
+    paths: ["infra/**", ".github/workflows/infra.yml"]
+  push:
+    branches: [main]
+    paths: ["infra/**", ".github/workflows/infra.yml"]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to apply
+        type: choice
+        options: [dev, prod]
+        default: dev
+
+permissions:
+  contents: read
+
+env:
+  TOFU_VERSION: 1.13.0
+  ARM_USE_OIDC: "true"
+  ARM_USE_AZUREAD: "true"
+  ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+  ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+  TF_IN_AUTOMATION: "true"
+  TF_VAR_project_name: ${{ vars.PROJECT }}
+  TF_VAR_location: ${{ vars.LOCATION }}
+  TF_VAR_admin_username: ${{ vars.ADMIN_USER }}
+  TF_VAR_allowed_admin_cidrs: ${{ vars.ADMIN_CIDRS }} # HCL list, e.g. ["203.0.113.7/32"]
+  TF_VAR_ssh_public_key: ${{ vars.SSH_PUBLIC_KEY }}
+  BACKEND_ARGS: >-
+    -backend-config=resource_group_name=${{ vars.TFSTATE_RESOURCE_GROUP }}
+    -backend-config=storage_account_name=${{ vars.TFSTATE_STORAGE_ACCOUNT }}
+    -backend-config=container_name=tfstate
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: ${{ env.TOFU_VERSION }}
+      - uses: terraform-linters/setup-tflint@6ffdbaa3be476b3431f7275c26966ef32ff60337 # v6.3.2
+        with:
+          tflint_version: v0.64.0
+      - name: fmt
+        run: tofu fmt -check -recursive infra
+      - name: validate
+        run: |
+          for env in dev prod; do
+            tofu -chdir=infra/environments/$env init -backend=false -input=false
+            tofu -chdir=infra/environments/$env validate
+          done
+      - name: tflint
+        working-directory: infra
+        env:
+          GITHUB_TOKEN: ${{ github.token }} # plugin download rate limit
+        run: tflint --init && tflint --recursive --config "$PWD/.tflint.hcl"
+      - name: checkov
+        run: pipx run checkov==3.3.27 -d infra --config-file infra/.checkov.yaml
+
+  plan:
+    if: github.event_name == 'pull_request'
+    needs: lint
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write # OIDC token for Azure
+      pull-requests: write # plan comment
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [dev, prod]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: ${{ env.TOFU_VERSION }}
+          tofu_wrapper: false
+      - name: plan
+        working-directory: infra/environments/${{ matrix.environment }}
+        run: |
+          # shellcheck disable=SC2086  # BACKEND_ARGS is several arguments on purpose
+          tofu init -input=false $BACKEND_ARGS
+          set -o pipefail
+          tofu plan -input=false -no-color -lock=false | tee plan.txt
+      - name: comment plan on the PR
+        if: always()
+        working-directory: infra/environments/${{ matrix.environment }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_ENV: ${{ matrix.environment }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          {
+            echo "### OpenTofu plan: $TARGET_ENV"
+            echo '~~~'
+            tail -c 60000 plan.txt # GitHub caps comments at 65k characters
+            echo '~~~'
+          } > comment.md
+          gh pr comment "$PR_NUMBER" --body-file comment.md
+
+  apply:
+    if: github.event_name != 'pull_request'
+    needs: lint
+    runs-on: ubuntu-24.04
+    # Manual approval: configure "Required reviewers" on the dev/prod GitHub environments.
+    # A push to main only ever targets dev; prod is applied by manual dispatch.
+    environment: ${{ inputs.environment || 'dev' }}
+    concurrency: infra-${{ inputs.environment || 'dev' }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: ${{ env.TOFU_VERSION }}
+          tofu_wrapper: false
+      - name: plan and apply
+        working-directory: infra/environments/${{ inputs.environment || 'dev' }}
+        run: |
+          # shellcheck disable=SC2086  # BACKEND_ARGS is several arguments on purpose
+          tofu init -input=false $BACKEND_ARGS
+          tofu plan -input=false -out=tfplan
+          tofu apply -input=false tfplan

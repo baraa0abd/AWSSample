@@ -1,0 +1,26 @@
+---
+- name: Wait for the data disk to appear
+  ansible.builtin.wait_for:
+    path: "{{ disks_device }}"
+    timeout: 120
+
+# Only formats a blank device; an existing filesystem is never touched.
+- name: Create filesystem on the data disk
+  community.general.filesystem:
+    dev: "{{ disks_device }}"
+    fstype: "{{ disks_fstype }}"
+
+- name: Read filesystem UUID
+  ansible.builtin.command: blkid -s UUID -o value {{ disks_device }}
+  register: disks_uuid
+  changed_when: false
+  check_mode: false
+
+- name: Mount the data disk by UUID
+  ansible.posix.mount:
+    path: "{{ disks_mount_path }}"
+    src: "UUID={{ disks_uuid.stdout }}"
+    fstype: "{{ disks_fstype }}"
+    # nofail: a missing data disk must not leave the VM unbootable.
+    opts: defaults,noatime,nofail
+    state: mounted

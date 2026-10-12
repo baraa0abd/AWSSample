@@ -1,0 +1,6 @@
+---
+# Azure's udev rules expose data disks by LUN, so the device is the same on every node and
+# survives /dev/sdX reordering across reboots. OpenTofu attaches the data disk at LUN 0.
+disks_device: /dev/disk/azure/scsi1/lun0
+disks_fstype: ext4
+disks_mount_path: "{{ data_mount_path }}"

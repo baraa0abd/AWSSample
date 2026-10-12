@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# Copies K3s etcd snapshots to Azure Blob. Auth is the VM's managed identity: no credentials on disk.
+set -euo pipefail
+
+account="{{ k3s_server_backup_storage_account }}"
+container="{{ k3s_server_backup_container }}"
+dir=/var/lib/rancher/k3s/server/db/snapshots
+
+token=$(curl -sf -H Metadata:true \
+  "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https%3A%2F%2Fstorage.azure.com%2F" |
+  jq -r .access_token)
+
+# ponytail: re-uploads every retained snapshot each run (a dozen files of a few MB).
+# Switch to azcopy sync if snapshots ever get large.
+for f in "$dir"/*; do
+  [ -f "$f" ] || continue
+  curl -sf -X PUT -T "$f" \
+    -H "x-ms-blob-type: BlockBlob" -H "x-ms-version: 2023-11-03" \
+    -H "Authorization: Bearer $token" \
+    "https://${account}.blob.core.windows.net/${container}/$(hostname)/$(basename "$f")"
+  echo "uploaded $(basename "$f")"
+done

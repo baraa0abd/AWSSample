@@ -1,0 +1,69 @@
+# Platform alert rules, on top of the defaults shipped with kube-prometheus-stack.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: platform-alerts
+  namespace: monitoring
+spec:
+  groups:
+    - name: nodes
+      rules:
+        - alert: NodeDown
+          expr: up{job="node-exporter"} == 0
+          for: 2m
+          labels: { severity: critical }
+          annotations:
+            summary: "Node {{ $labels.instance }} is down"
+            description: "node-exporter on {{ $labels.instance }} has not been scraped for 2 minutes."
+        - alert: NodeDiskUsageHigh
+          expr: |
+            (1 - node_filesystem_avail_bytes{fstype=~"ext4|xfs"} / node_filesystem_size_bytes{fstype=~"ext4|xfs"}) * 100 > 80
+          for: 10m
+          labels: { severity: warning }
+          annotations:
+            summary: "Disk {{ $labels.mountpoint }} on {{ $labels.instance }} is {{ $value | printf \"%.0f\" }}% full"
+        - alert: NodeCpuHigh
+          expr: 100 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100 > 85
+          for: 15m
+          labels: { severity: warning }
+          annotations:
+            summary: "CPU on {{ $labels.instance }} above 85% for 15 minutes"
+        - alert: NodeMemoryHigh
+          expr: (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 > 90
+          for: 10m
+          labels: { severity: warning }
+          annotations:
+            summary: "Memory on {{ $labels.instance }} above 90% for 10 minutes"
+
+    - name: workloads
+      rules:
+        - alert: PodCrashLooping
+          expr: max_over_time(kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff"}[5m]) >= 1
+          for: 5m
+          labels: { severity: critical }
+          annotations:
+            summary: "{{ $labels.namespace }}/{{ $labels.pod }} is in CrashLoopBackOff"
+        - alert: AppHigh5xxRate
+          expr: |
+            sum by (namespace, job) (rate(http_requests_total{code=~"5.."}[5m]))
+              / sum by (namespace, job) (rate(http_requests_total[5m])) > 0.05
+          for: 5m
+          labels: { severity: critical }
+          annotations:
+            summary: "{{ $labels.namespace }}/{{ $labels.job }}: more than 5% of requests are failing (5xx)"
+
+    - name: certificates
+      rules:
+        # Needs cert-manager (installed when a DOMAIN is configured); silent otherwise.
+        - alert: CertificateExpiringSoon
+          expr: certmanager_certificate_expiration_timestamp_seconds - time() < 14 * 24 * 3600
+          for: 1h
+          labels: { severity: warning }
+          annotations:
+            summary: "Certificate {{ $labels.namespace }}/{{ $labels.name }} expires in less than 14 days"
+        - alert: CertificateNotReady
+          expr: certmanager_certificate_ready_status{condition="False"} == 1
+          for: 15m
+          labels: { severity: critical }
+          annotations:
+            summary: "Certificate {{ $labels.namespace }}/{{ $labels.name }} is not ready (renewal failing?)"

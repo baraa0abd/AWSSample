@@ -1,0 +1,22 @@
+# OpenTofu: caches, plans, and anything that could hold state or per-user values
+.terraform/
+*.tfstate*
+tfplan
+backend.hcl
+*.auto.tfvars
+
+# Generated per environment / per user
+ansible/inventories/
+.kube/
+local.mk
+
+# Never commit plaintext secrets; only *.enc.yaml (SOPS) belongs in secrets/
+secrets/**
+!secrets/README.md
+!secrets/**/
+!secrets/**/*.enc.yaml
+*.age
+keys.txt
+
+# Tool caches
+.ansible/

@@ -1,0 +1,9 @@
+---
+k3s_agent_version: "{{ k3s_version }}"
+k3s_agent_installer_url: "https://raw.githubusercontent.com/k3s-io/k3s/{{ k3s_agent_version | urlencode }}/install.sh"
+k3s_agent_installer_path: "/usr/local/bin/k3s-install-{{ k3s_agent_version }}.sh"
+
+k3s_agent_node_ip: "{{ node_ip }}"
+k3s_agent_server_host: "{{ groups['k3s_server'][0] }}"
+# Agents join over the private network, never through the public IP.
+k3s_agent_server_url: "https://{{ hostvars[k3s_agent_server_host]['node_ip'] }}:6443"

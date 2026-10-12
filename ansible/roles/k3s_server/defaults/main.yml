@@ -1,0 +1,18 @@
+---
+k3s_server_version: "{{ k3s_version }}"
+# The installer is fetched from the release tag, so it is pinned with the binary.
+k3s_server_installer_url: "https://raw.githubusercontent.com/k3s-io/k3s/{{ k3s_server_version | urlencode }}/install.sh"
+k3s_server_installer_path: "/usr/local/bin/k3s-install-{{ k3s_server_version }}.sh"
+
+k3s_server_node_ip: "{{ node_ip }}"
+k3s_server_public_address: "{{ k3s_api_public_address }}"
+k3s_server_tls_sans: "{{ k3s_tls_sans }}"
+k3s_server_local_storage_path: "{{ data_mount_path }}/local-path"
+
+# Snapshots: taken by K3s on this schedule, then copied to Azure Blob by a systemd timer.
+k3s_server_snapshot_cron: "0 */6 * * *"
+k3s_server_snapshot_retention: 12
+k3s_server_backup_storage_account: "{{ k3s_backup_storage_account }}"
+k3s_server_backup_container: "{{ k3s_backup_container }}"
+
+k3s_server_kubeconfig_local_path: "{{ kubeconfig_local_path }}"

@@ -1,0 +1,12 @@
+---
+# Cluster-wide settings shared by several roles. Per-environment facts (IPs, CIDRs, backup
+# account) come from the OpenTofu-generated inventory.
+k3s_version: v1.36.5+k3s1
+k3s_pod_cidr: 10.42.0.0/16
+k3s_service_cidr: 10.43.0.0/16
+
+# Managed data disk (LUN 0); local-path PVs are created under it.
+data_mount_path: /mnt/data
+
+# Where the cluster kubeconfig is written on the machine running Ansible.
+kubeconfig_local_path: "{{ playbook_dir }}/../.kube/{{ env }}.yaml"

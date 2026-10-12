@@ -1,0 +1,10 @@
+# Copy to local.mk (gitignored) and fill in. Nothing here is secret.
+PROJECT     = <PROJECT_NAME>
+LOCATION    = <AZURE_REGION>
+ADMIN_USER  = <ADMIN_USER>
+ADMIN_CIDRS = ["<YOUR_PUBLIC_IP>/32"]
+IMAGE_REPO  = ghcr.io/<OWNER>/webapp
+# Optional: enables TLS via cert-manager + Let's Encrypt. `make output` prints a free
+# <project>-<env>.<region>.cloudapp.azure.com name you can use here.
+# DOMAIN     = <OPTIONAL_DOMAIN>
+# ACME_EMAIL = you@example.com

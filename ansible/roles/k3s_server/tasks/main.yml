@@ -1,0 +1,118 @@
+---
+- name: Create K3s config directory
+  ansible.builtin.file:
+    path: /etc/rancher/k3s
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Write K3s server config
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: /etc/rancher/k3s/config.yaml
+    owner: root
+    group: root
+    mode: "0600"
+  notify: Restart k3s
+
+- name: Download the pinned K3s installer
+  ansible.builtin.get_url:
+    url: "{{ k3s_server_installer_url }}"
+    dest: "{{ k3s_server_installer_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Check installed K3s version
+  ansible.builtin.command: k3s --version
+  register: k3s_server_installed
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+# Runs on first install and when k3s_version changes (in-place upgrade).
+- name: Install K3s server
+  ansible.builtin.command: "{{ k3s_server_installer_path }}"
+  environment:
+    INSTALL_K3S_VERSION: "{{ k3s_server_version }}"
+    INSTALL_K3S_EXEC: server
+  when: k3s_server_version not in (k3s_server_installed.stdout | default(''))
+  changed_when: true
+
+- name: Enable K3s
+  ansible.builtin.systemd_service:
+    name: k3s
+    enabled: true
+    state: started
+
+- name: Apply config changes before going on
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the Kubernetes API
+  ansible.builtin.wait_for:
+    port: 6443
+    timeout: 300
+
+- name: Read the cluster kubeconfig
+  ansible.builtin.slurp:
+    src: /etc/rancher/k3s/k3s.yaml
+  register: k3s_server_kubeconfig
+  no_log: true
+
+- name: Save kubeconfig locally with the public API address
+  ansible.builtin.copy:
+    content: "{{ k3s_server_kubeconfig.content | b64decode | replace('https://127.0.0.1:6443', 'https://' ~ k3s_server_public_address ~ ':6443') }}"
+    dest: "{{ k3s_server_kubeconfig_local_path }}"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Install the snapshot upload script
+  ansible.builtin.template:
+    src: k3s-backup.sh.j2
+    dest: /usr/local/bin/k3s-backup.sh
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Install the snapshot upload service and timer
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/k3s-backup.{{ item.key }}"
+    content: "{{ item.value }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ k3s_server_backup_units | dict2items }}"
+  loop_control:
+    label: "k3s-backup.{{ item.key }}"
+  vars:
+    k3s_server_backup_units:
+      service: |
+        [Unit]
+        Description=Upload K3s etcd snapshots to Azure Blob
+        After=network-online.target k3s.service
+        Wants=network-online.target
+
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/local/bin/k3s-backup.sh
+      timer: |
+        [Unit]
+        Description=Upload K3s etcd snapshots to Azure Blob (hourly)
+
+        [Timer]
+        OnCalendar=hourly
+        RandomizedDelaySec=300
+        Persistent=true
+
+        [Install]
+        WantedBy=timers.target
+
+- name: Enable the snapshot upload timer
+  ansible.builtin.systemd_service:
+    name: k3s-backup.timer
+    enabled: true
+    state: started
+    daemon_reload: true

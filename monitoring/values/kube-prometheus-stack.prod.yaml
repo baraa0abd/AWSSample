@@ -1,0 +1,11 @@
+# prod: 30 days of metrics on a larger volume.
+prometheus:
+  prometheusSpec:
+    retention: 30d
+    retentionSize: 45GB
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          resources:
+            requests:
+              storage: 50Gi

@@ -1,0 +1,64 @@
+name: deploy
+
+# Reusable: deploys the image built from this commit to one environment.
+# Environment secrets: KUBECONFIG_B64 (base64 of .kube/<env>.yaml), SOPS_AGE_KEY,
+#   GHCR_PULL_TOKEN (PAT with read:packages - the job token expires, the cluster needs a durable one).
+# Environment variables: DOMAIN, ACME_EMAIL (optional).
+on:
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    environment: ${{ inputs.environment }}
+    concurrency: deploy-${{ inputs.environment }}
+    env:
+      ENV: ${{ inputs.environment }}
+      IMAGE_REPO: ghcr.io/${{ github.repository_owner }}/webapp
+      IMAGE_TAG: ${{ github.sha }}
+      RG: ${{ vars.PROJECT }}-${{ inputs.environment }}-rg
+      NSG: ${{ vars.PROJECT }}-${{ inputs.environment }}-nodes-nsg
+      RULE: ci-runner-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.19.0
+      - name: install sops
+        run: |
+          curl -fsSL -o /usr/local/bin/sops https://github.com/getsops/sops/releases/download/v3.13.3/sops-v3.13.3.linux.amd64
+          chmod +x /usr/local/bin/sops
+      - uses: azure/login@053f7285eb20bf5469ef084617b0b24d3cec53fc # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      # The K3s API only accepts admin CIDRs. Let this one runner in for the length of the job.
+      - name: open the K3s API to this runner
+        run: |
+          az network nsg rule create -g "$RG" --nsg-name "$NSG" -n "$RULE" --priority 200 \
+            --direction Inbound --access Allow --protocol Tcp --destination-port-ranges 6443 \
+            --source-address-prefixes "$(curl -fsS https://api.ipify.org)/32" -o none
+          sleep 30 # NSG changes take a few seconds to reach the NIC
+      - name: deploy
+        env:
+          KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+          REGISTRY_USER: ${{ github.repository_owner }}
+          REGISTRY_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+          DOMAIN: ${{ vars.DOMAIN }}
+          ACME_EMAIL: ${{ vars.ACME_EMAIL }}
+        run: |
+          mkdir -p .kube && (umask 077; echo "$KUBECONFIG_B64" | base64 -d > ".kube/${ENV}.yaml")
+          bash scripts/deploy.sh
+      - name: close the K3s API again
+        if: always()
+        run: az network nsg rule delete -g "$RG" --nsg-name "$NSG" -n "$RULE" -o none

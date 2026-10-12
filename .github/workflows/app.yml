@@ -1,0 +1,88 @@
+name: app
+
+# PR: test, lint, build, scan. main: also push the image, deploy to dev, then prod behind
+# the prod environment's required reviewers (the manual gate).
+on:
+  pull_request:
+    paths: ["app/**", "k8s/**", "scripts/**", ".github/workflows/app.yml"]
+  push:
+    branches: [main]
+    paths: ["app/**", "k8s/**", "scripts/**", ".github/workflows/app.yml"]
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_REPO: ghcr.io/${{ github.repository_owner }}/webapp
+  IMAGE_TAG: ${{ github.sha }}
+  HELM_VERSION: v3.19.0
+  SOPS_VERSION: v3.13.3
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: app/go.mod
+          cache: false # no dependencies to cache
+      - name: lint and test
+        working-directory: app
+        run: |
+          test -z "$(gofmt -l .)" || { gofmt -d .; exit 1; }
+          go vet ./...
+          go test -race ./...
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - name: helm lint and kubeconform
+        run: |
+          for env in dev prod; do
+            helm lint k8s/chart -f "k8s/chart/values-$env.yaml" --set image.repository="$IMAGE_REPO" --set image.tag="$IMAGE_TAG"
+            helm template webapp k8s/chart -f "k8s/chart/values-$env.yaml" \
+              --set image.repository="$IMAGE_REPO" --set image.tag="$IMAGE_TAG" \
+              --set ingress.host=app.example.com --set ingress.tls=true --api-versions monitoring.coreos.com/v1 |
+              docker run --rm -i ghcr.io/yannh/kubeconform:v0.8.0 -strict -summary -schema-location default \
+                -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' -
+          done
+
+  build:
+    needs: test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write # push to GHCR with the job token
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        if: github.event_name == 'push'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: build, scan (fails on HIGH/CRITICAL), push on main
+        env:
+          PUSH: ${{ github.event_name == 'push' && '1' || '0' }}
+        run: bash scripts/build.sh
+
+  deploy-dev:
+    if: github.event_name == 'push'
+    needs: build
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: dev
+    secrets: inherit
+    permissions:
+      contents: read
+      id-token: write
+
+  deploy-prod:
+    needs: deploy-dev
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: prod # paused until a required reviewer approves
+    secrets: inherit
+    permissions:
+      contents: read
+      id-token: write

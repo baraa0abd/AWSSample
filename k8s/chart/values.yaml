@@ -1,0 +1,49 @@
+# Defaults shared by every environment; values-<env>.yaml overrides them.
+image:
+  repository: "" # required, e.g. ghcr.io/<owner>/webapp
+  tag: "" # required: git SHA or semver. `latest` is rejected.
+  pullPolicy: IfNotPresent
+imagePullSecrets: [] # e.g. [{name: registry-credentials}]
+
+port: 8080
+
+resources:
+  requests: { cpu: 50m, memory: 32Mi }
+  limits: { cpu: 250m, memory: 128Mi }
+
+autoscaling:
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+
+pdb:
+  minAvailable: 1
+
+ingress:
+  className: traefik
+  host: "" # empty = match any host (plain HTTP on the public IP)
+  tls: false # true requires a host and cert-manager
+  clusterIssuer: letsencrypt
+
+# Non-secret settings -> ConfigMap -> container env.
+config:
+  GREETING: hello
+
+# Secret settings -> Secret -> container env. Never set here: they come from the
+# SOPS-encrypted secrets/<env>/app.enc.yaml, decrypted at deploy time.
+secrets: {}
+
+persistence:
+  # Off by default: the app is stateless, and a ReadWriteOnce local-path volume pins all
+  # replicas to one node. Mounted at /data when enabled.
+  enabled: false
+  storageClass: local-path
+  size: 1Gi
+
+serviceMonitor:
+  enabled: true # only rendered if the Prometheus Operator CRDs exist in the cluster
+
+networkPolicy:
+  enabled: true
+  ingressNamespace: kube-system # where K3s runs Traefik
+  monitoringNamespace: monitoring

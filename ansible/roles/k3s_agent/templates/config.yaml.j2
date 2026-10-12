@@ -1,0 +1,4 @@
+# {{ ansible_managed }}
+server: {{ k3s_agent_server_url }}
+token: {{ k3s_agent_token.content | b64decode | trim }}
+node-ip: {{ k3s_agent_node_ip }}

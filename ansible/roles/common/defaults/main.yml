@@ -1,0 +1,36 @@
+---
+common_timezone: Etc/UTC
+common_packages:
+  - ca-certificates
+  - curl
+  - jq
+  - ufw
+  - fail2ban
+  - unattended-upgrades
+  - apt-listchanges
+
+# Same ports as the NSG. Source filtering for 22/6443 is done by the NSG only.
+common_open_tcp_ports: ["22", "6443", "80", "443"]
+# Fully trusted sources: the VNet (node-to-node) and the cluster's pod and service networks.
+common_trusted_cidrs:
+  - "{{ vnet_cidr }}"
+  - "{{ k3s_pod_cidr }}"
+  - "{{ k3s_service_cidr }}"
+
+common_kernel_modules: [overlay, br_netfilter]
+common_sysctl:
+  # Kubernetes networking
+  net.ipv4.ip_forward: 1
+  net.bridge.bridge-nf-call-iptables: 1
+  net.bridge.bridge-nf-call-ip6tables: 1
+  # Headroom for many pods / log tailers
+  fs.inotify.max_user_instances: 1024
+  fs.inotify.max_user_watches: 524288
+  vm.max_map_count: 262144
+  # CIS-inspired hardening
+  net.ipv4.conf.all.accept_redirects: 0
+  net.ipv4.conf.all.send_redirects: 0
+  net.ipv4.conf.all.accept_source_route: 0
+  net.ipv4.tcp_syncookies: 1
+  kernel.dmesg_restrict: 1
+  kernel.kptr_restrict: 2

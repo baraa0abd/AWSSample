@@ -1,0 +1,7 @@
+# prod: 30 days of logs on a larger volume.
+loki:
+  limits_config:
+    retention_period: 720h
+singleBinary:
+  persistence:
+    size: 50Gi

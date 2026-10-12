@@ -1,0 +1,10 @@
+autoscaling:
+  minReplicas: 3
+  maxReplicas: 10
+pdb:
+  minAvailable: 2
+resources:
+  requests: { cpu: 100m, memory: 64Mi }
+  limits: { cpu: 500m, memory: 256Mi }
+config:
+  GREETING: hello

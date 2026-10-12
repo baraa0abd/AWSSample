@@ -1,0 +1,8 @@
+---
+docker_packages:
+  - docker-ce
+  - docker-ce-cli
+  - containerd.io
+  - docker-buildx-plugin
+# Users allowed to talk to the Docker daemon (root-equivalent: keep this short).
+docker_users: ["{{ ansible_user }}"]

@@ -1,0 +1,7 @@
+apiVersion: v2
+name: webapp
+description: Stateless HTTP service with ingress, autoscaling, network policies and metrics
+type: application
+version: 0.1.0
+# The image tag is always passed explicitly at deploy time (git SHA); this is informational.
+appVersion: "0.1.0"

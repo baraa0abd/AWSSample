@@ -1,0 +1,36 @@
+name: config
+
+# Static checks for the Ansible code. Running it against live hosts stays a deliberate,
+# local `make configure` (the nodes only accept SSH from admin CIDRs).
+on:
+  pull_request:
+    paths: ["ansible/**", ".yamllint", ".github/workflows/config.yml"]
+  push:
+    branches: [main]
+    paths: ["ansible/**", ".yamllint", ".github/workflows/config.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: ansible/requirements.txt
+      - name: install pinned tools and collections
+        run: |
+          pip install -r ansible/requirements.txt
+          ansible-galaxy collection install -r ansible/requirements.yml
+      - name: yamllint
+        run: yamllint -s .
+      - name: ansible-lint
+        working-directory: ansible
+        run: ansible-lint
+      - name: syntax-check
+        working-directory: ansible
+        run: ansible-playbook site.yml --syntax-check -i localhost,
