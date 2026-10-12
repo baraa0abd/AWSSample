@@ -1,64 +1,157 @@
-# K3s platform on AWS
+# AWS Sample Platform
 
-Production-style infrastructure and delivery on AWS, entirely as code:
+A reference platform that provisions K3s on AWS EC2, deploys a Go HTTP service, and collects metrics and logs. A Docker-based local environment exercises application delivery and monitoring without an AWS account.
 
-**OpenTofu** provisions EC2 instances -> **Ansible** builds a K3s cluster -> **Docker** builds a
-scanned image -> **Helm** deploys it with ingress, autoscaling and network policies ->
-**Prometheus, Grafana, Loki and Alloy** observe it -> **GitHub Actions** automates it with OIDC
-(no stored cloud credentials).
+Both AWS environments use **one control-plane server in one availability zone**. This is a production-style sample; the `prod` environment is not a highly available platform.
 
-- Design: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and decisions in [docs/ADR.md](docs/ADR.md)
-- Operations: [docs/RUNBOOK.md](docs/RUNBOOK.md)
+## Architecture
 
-## Quick start
-
-```bash
-cp local.mk.example local.mk     # project name, region, your public IP, image repo
-aws login
-make bootstrap                   # remote state (once)
-make plan && make apply          # infrastructure  (billable)
-make configure                   # K3s cluster
-make secrets && make monitoring  # encrypted secrets, observability stack
-PUSH=1 make build && make deploy # the app
+```mermaid
+flowchart LR
+  T[OpenTofu] -->|Inventory| A[Ansible]
+  A -->|Kubeconfig| K[K3s on EC2]
+  G[Go service] --> B[Docker build and Trivy scan]
+  B --> R[GHCR image tagged by commit SHA]
+  R --> H[Helm deployment]
+  H --> K
+  K --> O[Prometheus / Grafana / Loki / Alloy]
+  CI[GitHub Actions] -. OIDC .-> T
+  CI -. Delivery .-> H
 ```
 
-`make help` lists every target. No tools installed, or on Windows? Everything except `build` runs
-in a container with pinned versions: `./toolbox.sh make plan`.
+| Layer | Responsibility | Source |
+|---|---|---|
+| Infrastructure | VPC, EC2, IAM, EBS, backups, generated inventory | `infra/` |
+| Configuration | Host hardening, disks, K3s, kubeconfig | `ansible/` |
+| Application | HTTP endpoints, health checks, metrics | `app/` |
+| Delivery | Build, scan, encrypted values, Helm rollout | `scripts/`, `k8s/chart/` |
+| Observability | Metrics, logs, dashboards, alert rules | `monitoring/` |
+| Automation | Validation and deployment workflows | `.github/workflows/` |
 
-Prerequisites when running natively: OpenTofu >= 1.10 (or Terraform), AWS CLI v2, Ansible
-(`pip install -r ansible/requirements.txt && ansible-galaxy collection install -r ansible/requirements.yml`),
-Docker, kubectl, Helm 3, sops, age, make, jq. An SSH key at `~/.ssh/id_ed25519`.
+The root Makefile coordinates these layers. `infra/modules/stack` composes reusable AWS modules; environment directories supply sizing and backend settings. Inventory and kubeconfig are generated hand-off artifacts. See the [architecture](docs/ARCHITECTURE.md) and [design decisions](docs/ADR.md).
 
-## Layout
+## Start locally
 
-| Path | What |
+Run from the repository root in Bash. On Windows, use **Git Bash** with Docker Desktop running Linux containers. Install OpenTofu on the host and ensure `docker`, `tofu`, and `git` are available on the Bash PATH. The toolbox supplies cluster-management tools.
+
+```bash
+git clone https://github.com/baraa0abd/AWSSample.git
+cd AWSSample
+# Read the secrets guide below before starting on a fresh clone.
+bash scripts/local.sh up
+bash scripts/local.sh status
+bash scripts/local.sh password
+```
+
+**Secret ownership:** the committed local ciphertext requires its original age key. If you do not have that key, follow [first setup on a new machine](secrets/README.md#first-setup-on-a-new-machine) before `up`.
+
+`up` creates K3s containers, configures the cluster, builds and scans the image, imports it into the nodes, creates encrypted values, installs monitoring, and deploys the service.
+
+| Service | Address |
 |---|---|
-| `infra/` | OpenTofu modules, `dev`/`prod` environments, state bootstrap, OIDC bootstrap |
-| `ansible/` | Roles (`common`, `disks`, `docker`, `k3s_server`, `k3s_agent`) and `site.yml` |
-| `app/` | Go service and its Dockerfile |
-| `k8s/chart/` | Helm chart for the app |
-| `monitoring/` | Helm values, dashboards (JSON) and alert rules |
-| `scripts/` | build, deploy, monitoring and secrets scripts called by the Makefile |
-| `secrets/` | SOPS-encrypted secrets only (`*.enc.yaml`) |
-| `.github/workflows/` | `infra`, `config`, `app` pipelines and the reusable `deploy` |
-| `toolbox/`, `toolbox.sh` | Container with every CLI at a pinned version |
-| `docs/` | Architecture, ADRs, runbook |
+| Application | http://localhost:8080 |
+| Grafana | http://localhost:3000 (user `admin`; password command above) |
+| Prometheus | http://localhost:9090 |
+| Alertmanager | http://localhost:9093 |
 
-## Conventions
+Remove the local cluster and its managed storage with `bash scripts/local.sh down`. The [local walkthrough](docs/LOCAL.md) covers dashboards, scaling, and failure exercises. Local containers skip AWS networking, IAM, host hardening, and EBS setup.
 
-- Names: `<project>-<env>-<resource>`. Environments: `dev`, `prod`.
-- Every version is pinned: providers (lock file), K3s, Helm charts, images (digest), Ansible
-  collections, GitHub Actions (commit SHA), CLI tools.
-- No secrets in git: SOPS + age. No cloud credentials in CI: OIDC.
-- Images are deployed by git SHA; `latest` is rejected by the chart.
+## Deploy to AWS
 
-## CI setup (once)
+### Prerequisites
 
-1. `PROJECT=<project> GITHUB_REPO=<owner>/<repo> bash infra/bootstrap/oidc.sh` and set the two
-   printed values (`AWS_ROLE_ARN`, `TFSTATE_BUCKET`) as repository **variables**.
-2. More repository variables: `PROJECT`, `AWS_REGION`, `ADMIN_CIDRS` (HCL list), `SSH_PUBLIC_KEY`.
-3. Create GitHub environments `dev` and `prod`; add **required reviewers** (that is the manual
-   approval for `tofu apply` and for production deploys).
-4. Per environment, secrets `KUBECONFIG_B64` (`base64 -w0 .kube/<env>.yaml`), `SOPS_AGE_KEY` (content
-   of the age key file), `GHCR_PULL_TOKEN` (PAT with `read:packages`); optional variables `DOMAIN`,
-   `ACME_EMAIL`.
+- An AWS account and an authenticated AWS CLI session with provisioning permissions.
+- Bash, Git, Make, Docker, and an SSH key at `~/.ssh/id_ed25519`.
+- Native tools: OpenTofu >= 1.10, AWS CLI v2, Ansible with the pinned requirements and collections, kubectl, Helm 3, SOPS, age, and jq.
+- Alternatively, run infrastructure and cluster commands through `./toolbox.sh make <target> ENV=dev`. Image builds run on the host with access to Docker.
+- A GHCR repository and authentication for pushes; private images also need durable pull credentials.
+
+### Configure and provision
+
+```bash
+cp local.mk.example local.mk
+# Edit PROJECT, REGION, ADMIN_CIDRS, and IMAGE_REPO.
+# Authenticate the host AWS CLI using your account's configured login method.
+aws sts get-caller-identity
+# Generate an SSH key only if you do not already have one:
+# ssh-keygen -t ed25519
+
+make bootstrap
+make plan ENV=dev
+# Review the saved plan: the next step creates billable AWS resources.
+make apply ENV=dev
+make configure ENV=dev
+```
+
+`bootstrap` creates shared S3 state storage and local backend files. `plan` saves proposed changes; `apply` uses that saved plan. `configure` writes `.kube/dev.yaml`. Keep local settings, plans, state, inventory, kubeconfig, and private keys out of Git.
+
+### Install and verify
+
+```bash
+make secrets ENV=dev
+make monitoring ENV=dev
+docker login ghcr.io
+PUSH=1 make build
+make deploy ENV=dev
+
+export KUBECONFIG="$PWD/.kube/dev.yaml"
+kubectl get nodes
+kubectl -n webapp-dev get pods,ingress,hpa
+make output ENV=dev
+```
+
+For private images, supply `REGISTRY_USER` and `REGISTRY_TOKEN` through environment variables to `make deploy`. Monitoring precedes application deployment so its operator can discover the app's ServiceMonitor.
+
+Default ingress serves HTTP on the server public IP. For HTTPS, point your DNS name at that IP, set `DOMAIN` and `ACME_EMAIL` in `local.mk`, then repeat plan, apply, configure, and deploy. Follow the [runbook](docs/RUNBOOK.md) for rollback, backups, recovery, and troubleshooting.
+
+## Daily commands
+
+| Command | Result |
+|---|---|
+| `make help` | List supported targets |
+| `make plan ENV=dev` | Initialize state and save a plan |
+| `make check ENV=dev` | Ansible check mode with a diff |
+| `PUSH=1 make build` | Build, scan, and push SHA and version tags |
+| `make deploy ENV=prod IMAGE_TAG=<published-sha>` | Deploy an existing image; roll back a failed rollout |
+| `make lint` | Infrastructure formatting, YAML, Ansible, and Helm checks |
+| `make destroy ENV=dev` | Interactively destroy environment resources |
+
+Promote the same published image tag between environments. Local builds default to a 12-character commit SHA; CI uses the full SHA. Select the tag actually published to the registry.
+
+## GitHub Actions setup
+
+1. Run `PROJECT=<project> GITHUB_REPO=baraa0abd/AWSSample bash infra/bootstrap/oidc.sh` from an authenticated workstation.
+2. Set repository variables `AWS_ROLE_ARN`, `TFSTATE_BUCKET`, `PROJECT`, `AWS_REGION`, `ADMIN_CIDRS` (HCL list), and `SSH_PUBLIC_KEY`.
+3. Create GitHub environments `dev` and `prod`; configure required reviewers where approval is needed. Approval gates depend on these protection rules.
+4. Per environment, set secrets `KUBECONFIG_B64`, `SOPS_AGE_KEY`, and `GHCR_PULL_TOKEN` (package-read token). Optional variables: `DOMAIN`, `ACME_EMAIL`.
+5. Commit your SOPS-encrypted environment values and public recipient configuration using the [secrets guide](secrets/README.md).
+
+| Workflow | Behavior |
+|---|---|
+| `infra` | Checks and PR plans; infrastructure pushes to `main` apply dev; manual dispatch selects dev or prod |
+| `config` | Ansible lint and syntax checks; live host configuration runs from the workstation |
+| `app` | Tests, chart validation, build, scan; relevant pushes to `main` publish and deploy dev then prod |
+| `deploy` | Reusable Helm deployment; grants temporary runner API access and removes it afterward |
+
+Path filters mean documentation-only changes do not trigger deployment workflows. AWS authentication uses OIDC. The bootstrap role currently grants `AdministratorAccess`; narrow it or add a permissions boundary before using a shared account.
+
+## Operational limits
+
+- One server and one availability zone create a control-plane and ingress failure point.
+- Local-path volumes are node-bound. Etcd snapshots protect Kubernetes objects, not volume data.
+- In-cluster monitoring cannot independently report a complete cluster outage.
+- Dev nodes stop daily at 19:00 UTC (22:00 Baghdad time), with no automatic restart. Retained NAT, storage, and other resources can still incur charges.
+- Dependencies use explicit versions and provider locks where available. Deployment uses SHA tags; image digest enforcement is not implemented.
+- The runbook records historical local validation. Real AWS provisioning and recovery must be exercised before operational adoption.
+
+## Documentation
+
+| Guide | Purpose |
+|---|---|
+| [Architecture](docs/ARCHITECTURE.md) | Network paths, trust boundaries, layer ownership |
+| [Decisions](docs/ADR.md) | Design rationale and accepted tradeoffs |
+| [Local walkthrough](docs/LOCAL.md) | Learn and test without AWS |
+| [Runbook](docs/RUNBOOK.md) | Deploy, scale, roll back, restore, destroy |
+| [Infrastructure](infra/README.md) / [Ansible](ansible/README.md) | Provisioning and host configuration |
+| [Application](app/README.md) / [Kubernetes](k8s/README.md) | Endpoints and chart behavior |
+| [Monitoring](monitoring/README.md) / [Secrets](secrets/README.md) | Observability and secret lifecycle |

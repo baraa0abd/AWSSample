@@ -11,7 +11,7 @@ ANSIBLE := cd ansible && ansible-playbook -i inventories/$(ENV)/hosts.yml site.y
 APP_NAME ?= webapp
 
 # Per-user inputs reach OpenTofu as TF_VAR_*, the scripts as plain environment variables.
-export ENV APP_NAME IMAGE_REPO DOMAIN ACME_EMAIL
+export ENV APP_NAME IMAGE_REPO IMAGE_TAG DOMAIN ACME_EMAIL
 export AWS_REGION                 = $(REGION)
 export TF_VAR_project_name        = $(PROJECT)
 export TF_VAR_region              = $(REGION)

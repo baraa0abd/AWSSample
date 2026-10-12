@@ -5,6 +5,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 ENV="${ENV:?set ENV to dev, prod or local}"
+case "$ENV" in
+  dev|prod|local) ;;
+  *) echo "unsupported ENV '$ENV': expected dev, prod or local" >&2; exit 1 ;;
+esac
 key_file="${SOPS_AGE_KEY_FILE:-$HOME/.config/sops/age/keys.txt}"
 
 if [ ! -f "$key_file" ]; then

@@ -4,6 +4,10 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 ENV="${ENV:?set ENV to dev, prod or local}"
+case "$ENV" in
+  dev|prod|local) ;;
+  *) echo "unsupported ENV '$ENV': expected dev, prod or local" >&2; exit 1 ;;
+esac
 export KUBECONFIG="${KUBECONFIG:-$PWD/.kube/${ENV}.yaml}"
 [ -f "$KUBECONFIG" ] || { echo "no kubeconfig at $KUBECONFIG - run 'make configure ENV=$ENV' first" >&2; exit 1; }
 

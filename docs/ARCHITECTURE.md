@@ -16,6 +16,25 @@ Decisions and their reasons are in [ADR.md](ADR.md); day-2 operations in [RUNBOO
 
 ## Components
 
+### Layer boundaries and change ownership
+
+OpenTofu owns resource creation; Ansible owns operating-system and K3s configuration;
+Docker and Helm own application packaging and rollout. The Makefile and scripts coordinate
+these layers. The Go service must not depend on infrastructure names or cloud credentials.
+
+| Change | Source | Follow-up |
+|---|---|---|
+| Shared AWS topology | `infra/modules/` | Plan both AWS environments; review replacement and deletion |
+| Environment size | `infra/environments/<env>/terraform.tfvars` | Plan, apply, configure new nodes |
+| Host or K3s settings | `ansible/roles/`, `ansible/group_vars/` | Lint, syntax-check, configure |
+| Service behavior | `app/` | Test, build, scan, deploy |
+| Workload configuration | `k8s/chart/` | Lint, render environment values, deploy |
+| Metrics and logs | `monitoring/` | Upgrade monitoring; verify targets and logs |
+
+Inventory, kubeconfig, plans, and state are generated artifacts; change their source instead
+of hand-editing them. `modules/stack` is the AWS composition root. The local Docker environment
+is a separate provisioning adapter that reuses the delivery and observability layers.
+
 ```mermaid
 flowchart TB
   admin([Admin workstation<br/>tofu / ansible / helm / kubectl])
