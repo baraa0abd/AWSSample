@@ -1,9 +1,9 @@
 terraform {
-  required_version = ">= 1.6.0"
+  required_version = ">= 1.10.0"
   required_providers {
-    azurerm = {
-      source  = "hashicorp/azurerm"
-      version = ">= 4.0"
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 6.0"
     }
   }
 }
@@ -13,30 +13,14 @@ variable "name_prefix" {
   type        = string
 }
 
-variable "resource_group_name" {
-  description = "Resource group to deploy into"
+variable "vpc_id" {
+  description = "VPC the security group belongs to"
   type        = string
 }
 
-variable "location" {
-  description = "Azure region"
+variable "vpc_cidr" {
+  description = "VPC CIDR (K3s API from inside the VPC)"
   type        = string
-}
-
-variable "nodes_subnet_id" {
-  description = "Subnet the nodes NSG is attached to"
-  type        = string
-}
-
-variable "nodes_subnet_cidr" {
-  description = "CIDR of the nodes subnet (node-to-node rule)"
-  type        = string
-}
-
-variable "management_subnet_id" {
-  description = "Optional management subnet to protect (null = none)"
-  type        = string
-  default     = null
 }
 
 variable "allowed_admin_cidrs" {
@@ -44,114 +28,54 @@ variable "allowed_admin_cidrs" {
   type        = list(string)
 }
 
-variable "tags" {
-  description = "Tags applied to all resources"
-  type        = map(string)
-  default     = {}
-}
-
 locals {
-  # priority => rule. Everything not listed is dropped by DenyAllInbound, which also
-  # overrides Azure's default AllowVnetInBound / AllowAzureLoadBalancerInBound.
-  nodes_rules = {
-    100 = { name = "AllowSshFromAdmin", protocol = "Tcp", ports = ["22"], sources = var.allowed_admin_cidrs }
-    110 = { name = "AllowK3sApiFromAdmin", protocol = "Tcp", ports = ["6443"], sources = var.allowed_admin_cidrs }
-    120 = { name = "AllowK3sApiFromVnet", protocol = "Tcp", ports = ["6443"], sources = ["VirtualNetwork"] }
-    130 = { name = "AllowHttpHttpsFromInternet", protocol = "Tcp", ports = ["80", "443"], sources = ["Internet"] }
-    # Node-to-node: flannel VXLAN 8472/udp, kubelet 10250, node-exporter 9100, ...
-    140 = { name = "AllowNodeToNode", protocol = "*", ports = ["*"], sources = [var.nodes_subnet_cidr] }
-  }
+  # name => rule. Security groups deny everything that is not listed.
+  cidr_rules = merge(
+    { for c in var.allowed_admin_cidrs : "ssh-admin-${c}" => { port = 22, cidr = c, description = "SSH from admin" } },
+    { for c in var.allowed_admin_cidrs : "k3s-api-admin-${c}" => { port = 6443, cidr = c, description = "K3s API from admin" } },
+    {
+      "k3s-api-vpc" = { port = 6443, cidr = var.vpc_cidr, description = "K3s API from inside the VPC" }
+      "http"        = { port = 80, cidr = "0.0.0.0/0", description = "HTTP to the ingress (ACME challenges, redirects)" }
+      "https"       = { port = 443, cidr = "0.0.0.0/0", description = "HTTPS to the ingress" }
+    },
+  )
 }
 
-resource "azurerm_network_security_group" "nodes" {
-  name                = "${var.name_prefix}-nodes-nsg"
-  resource_group_name = var.resource_group_name
-  location            = var.location
-  tags                = var.tags
+# One group for every cluster node. Agents have no public address, so the internet-facing
+# rules only ever take effect on the server.
+resource "aws_security_group" "nodes" {
+  name        = "${var.name_prefix}-nodes-sg"
+  description = "K3s cluster nodes"
+  vpc_id      = var.vpc_id
+  tags        = { Name = "${var.name_prefix}-nodes-sg" }
 }
 
-resource "azurerm_network_security_rule" "nodes" {
-  for_each                    = local.nodes_rules
-  resource_group_name         = var.resource_group_name
-  network_security_group_name = azurerm_network_security_group.nodes.name
-  name                        = each.value.name
-  priority                    = each.key
-  direction                   = "Inbound"
-  access                      = "Allow"
-  protocol                    = each.value.protocol
-  source_port_range           = "*"
-  destination_port_ranges     = each.value.ports == ["*"] ? null : each.value.ports
-  destination_port_range      = each.value.ports == ["*"] ? "*" : null
-  # A service tag must be a single source_address_prefix; CIDR lists use the plural form.
-  source_address_prefix      = length(each.value.sources) == 1 ? each.value.sources[0] : null
-  source_address_prefixes    = length(each.value.sources) == 1 ? null : each.value.sources
-  destination_address_prefix = "*"
+resource "aws_vpc_security_group_ingress_rule" "cidr" {
+  for_each          = local.cidr_rules
+  security_group_id = aws_security_group.nodes.id
+  description       = each.value.description
+  ip_protocol       = "tcp"
+  from_port         = each.value.port
+  to_port           = each.value.port
+  cidr_ipv4         = each.value.cidr
 }
 
-resource "azurerm_network_security_rule" "nodes_deny_all" {
-  resource_group_name         = var.resource_group_name
-  network_security_group_name = azurerm_network_security_group.nodes.name
-  name                        = "DenyAllInbound"
-  priority                    = 4096
-  direction                   = "Inbound"
-  access                      = "Deny"
-  protocol                    = "*"
-  source_port_range           = "*"
-  destination_port_range      = "*"
-  source_address_prefix       = "*"
-  destination_address_prefix  = "*"
+# Node-to-node: flannel VXLAN 8472/udp, kubelet 10250, node-exporter 9100, ...
+resource "aws_vpc_security_group_ingress_rule" "node_to_node" {
+  security_group_id            = aws_security_group.nodes.id
+  description                  = "All traffic between cluster nodes"
+  ip_protocol                  = "-1"
+  referenced_security_group_id = aws_security_group.nodes.id
 }
 
-resource "azurerm_subnet_network_security_group_association" "nodes" {
-  subnet_id                 = var.nodes_subnet_id
-  network_security_group_id = azurerm_network_security_group.nodes.id
+resource "aws_vpc_security_group_egress_rule" "all" {
+  security_group_id = aws_security_group.nodes.id
+  description       = "Outbound: package installs, image pulls, S3"
+  ip_protocol       = "-1"
+  cidr_ipv4         = "0.0.0.0/0"
 }
 
-# Optional management subnet: SSH from admins only.
-resource "azurerm_network_security_group" "management" {
-  count               = var.management_subnet_id == null ? 0 : 1
-  name                = "${var.name_prefix}-mgmt-nsg"
-  resource_group_name = var.resource_group_name
-  location            = var.location
-  tags                = var.tags
-
-  security_rule {
-    name                       = "AllowSshFromAdmin"
-    priority                   = 100
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "Tcp"
-    source_port_range          = "*"
-    destination_port_range     = "22"
-    source_address_prefixes    = var.allowed_admin_cidrs
-    destination_address_prefix = "*"
-  }
-
-  security_rule {
-    name                       = "DenyAllInbound"
-    priority                   = 4096
-    direction                  = "Inbound"
-    access                     = "Deny"
-    protocol                   = "*"
-    source_port_range          = "*"
-    destination_port_range     = "*"
-    source_address_prefix      = "*"
-    destination_address_prefix = "*"
-  }
-}
-
-resource "azurerm_subnet_network_security_group_association" "management" {
-  count                     = var.management_subnet_id == null ? 0 : 1
-  subnet_id                 = var.management_subnet_id
-  network_security_group_id = azurerm_network_security_group.management[0].id
-}
-
-output "nodes_subnet_id" {
-  description = "Nodes subnet ID, available only once the NSG is attached"
-  value       = azurerm_subnet_network_security_group_association.nodes.subnet_id
-}
-
-output "nodes_nsg_name" {
-  description = "Name of the nodes NSG (CI opens a temporary 6443 rule for its runner)"
-  value       = azurerm_network_security_group.nodes.name
+output "nodes_security_group_id" {
+  description = "Security group of the cluster nodes (CI opens a temporary 6443 rule for its runner)"
+  value       = aws_security_group.nodes.id
 }

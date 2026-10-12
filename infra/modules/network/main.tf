@@ -1,9 +1,9 @@
 terraform {
-  required_version = ">= 1.6.0"
+  required_version = ">= 1.10.0"
   required_providers {
-    azurerm = {
-      source  = "hashicorp/azurerm"
-      version = ">= 4.0"
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 6.0"
     }
   }
 }
@@ -13,111 +13,127 @@ variable "name_prefix" {
   type        = string
 }
 
-variable "resource_group_name" {
-  description = "Resource group to deploy into"
+variable "vpc_cidr" {
+  description = "VPC address space"
   type        = string
 }
 
-variable "location" {
-  description = "Azure region"
-  type        = string
-}
-
-variable "vnet_cidr" {
-  description = "VNet address space"
+variable "public_subnet_cidr" {
+  description = "CIDR of the public subnet (K3s server / ingress, NAT gateway)"
   type        = string
 }
 
 variable "nodes_subnet_cidr" {
-  description = "CIDR of the k3s-nodes subnet"
+  description = "CIDR of the private k3s-nodes subnet (agents)"
   type        = string
 }
 
-variable "management_subnet_cidr" {
-  description = "CIDR of the optional management subnet (null = not created)"
+variable "availability_zone" {
+  description = "AZ for both subnets. One AZ: EBS data disks are AZ-bound."
   type        = string
-  default     = null
 }
 
-variable "tags" {
-  description = "Tags applied to all resources"
-  type        = map(string)
-  default     = {}
+resource "aws_vpc" "this" {
+  cidr_block           = var.vpc_cidr
+  enable_dns_support   = true
+  enable_dns_hostnames = true
+  tags                 = { Name = "${var.name_prefix}-vpc" }
 }
 
-resource "azurerm_virtual_network" "this" {
-  name                = "${var.name_prefix}-vnet"
-  resource_group_name = var.resource_group_name
-  location            = var.location
-  address_space       = [var.vnet_cidr]
-  tags                = var.tags
+# The VPC's default security group allows everything between its members: empty it so nothing
+# can end up protected by it accidentally.
+resource "aws_default_security_group" "this" {
+  vpc_id = aws_vpc.this.id
+  tags   = { Name = "${var.name_prefix}-default-unused" }
 }
 
-resource "azurerm_subnet" "nodes" {
-  name                 = "k3s-nodes"
-  resource_group_name  = var.resource_group_name
-  virtual_network_name = azurerm_virtual_network.this.name
-  address_prefixes     = [var.nodes_subnet_cidr]
-  # Lets the backup storage account firewall allow this subnet by identity instead of by public IP.
-  service_endpoints = ["Microsoft.Storage"]
-  # Explicit egress only (NAT gateway below); Azure's implicit outbound IP is retired for new subnets.
-  default_outbound_access_enabled = false
+resource "aws_internet_gateway" "this" {
+  vpc_id = aws_vpc.this.id
+  tags   = { Name = "${var.name_prefix}-igw" }
 }
 
-resource "azurerm_subnet" "management" {
-  count                           = var.management_subnet_cidr == null ? 0 : 1
-  name                            = "management"
-  resource_group_name             = var.resource_group_name
-  virtual_network_name            = azurerm_virtual_network.this.name
-  address_prefixes                = [var.management_subnet_cidr]
-  default_outbound_access_enabled = false
+# Public subnet: only the K3s server (ingress + SSH jump host) and the NAT gateway live here.
+# Instances get a public address only when one is attached explicitly (the server's Elastic IP).
+resource "aws_subnet" "public" {
+  vpc_id                  = aws_vpc.this.id
+  cidr_block              = var.public_subnet_cidr
+  availability_zone       = var.availability_zone
+  map_public_ip_on_launch = false
+  tags                    = { Name = "${var.name_prefix}-public" }
 }
 
-# Agents have no public IP; the NAT gateway gives them (and the server) outbound internet for
-# package installs and image pulls.
-resource "azurerm_public_ip" "nat" {
-  name                = "${var.name_prefix}-nat-pip"
-  resource_group_name = var.resource_group_name
-  location            = var.location
-  allocation_method   = "Static"
-  sku                 = "Standard"
-  tags                = var.tags
+# Private subnet: agents. No route from the internet; outbound goes through the NAT gateway.
+resource "aws_subnet" "nodes" {
+  vpc_id                  = aws_vpc.this.id
+  cidr_block              = var.nodes_subnet_cidr
+  availability_zone       = var.availability_zone
+  map_public_ip_on_launch = false
+  tags                    = { Name = "${var.name_prefix}-k3s-nodes" }
 }
 
-resource "azurerm_nat_gateway" "this" {
-  name                = "${var.name_prefix}-natgw"
-  resource_group_name = var.resource_group_name
-  location            = var.location
-  sku_name            = "Standard"
-  tags                = var.tags
+resource "aws_eip" "nat" {
+  domain = "vpc"
+  tags   = { Name = "${var.name_prefix}-nat-eip" }
 }
 
-resource "azurerm_nat_gateway_public_ip_association" "this" {
-  nat_gateway_id       = azurerm_nat_gateway.this.id
-  public_ip_address_id = azurerm_public_ip.nat.id
+resource "aws_nat_gateway" "this" {
+  allocation_id = aws_eip.nat.id
+  subnet_id     = aws_subnet.public.id
+  tags          = { Name = "${var.name_prefix}-natgw" }
+  depends_on    = [aws_internet_gateway.this]
 }
 
-resource "azurerm_subnet_nat_gateway_association" "nodes" {
-  subnet_id      = azurerm_subnet.nodes.id
-  nat_gateway_id = azurerm_nat_gateway.this.id
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.this.id
+  tags   = { Name = "${var.name_prefix}-public-rt" }
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.this.id
+  }
 }
 
-output "vnet_id" {
-  description = "VNet ID"
-  value       = azurerm_virtual_network.this.id
+resource "aws_route_table" "nodes" {
+  vpc_id = aws_vpc.this.id
+  tags   = { Name = "${var.name_prefix}-k3s-nodes-rt" }
+
+  route {
+    cidr_block     = "0.0.0.0/0"
+    nat_gateway_id = aws_nat_gateway.this.id
+  }
+}
+
+resource "aws_route_table_association" "public" {
+  subnet_id      = aws_subnet.public.id
+  route_table_id = aws_route_table.public.id
+}
+
+resource "aws_route_table_association" "nodes" {
+  subnet_id      = aws_subnet.nodes.id
+  route_table_id = aws_route_table.nodes.id
+}
+
+output "vpc_id" {
+  description = "VPC ID"
+  value       = aws_vpc.this.id
+}
+
+output "availability_zone" {
+  description = "AZ the subnets (and therefore the nodes and their disks) live in"
+  value       = var.availability_zone
+}
+
+output "public_subnet_id" {
+  description = "Public subnet ID, usable once its internet route exists"
+  value       = aws_route_table_association.public.subnet_id
 }
 
 output "nodes_subnet_id" {
-  description = "k3s-nodes subnet ID"
-  value       = azurerm_subnet.nodes.id
-}
-
-output "management_subnet_id" {
-  description = "Management subnet ID (null when disabled)"
-  value       = one(azurerm_subnet.management[*].id)
+  description = "Private k3s-nodes subnet ID, usable once its NAT route exists"
+  value       = aws_route_table_association.nodes.subnet_id
 }
 
 output "nat_public_ip" {
   description = "Egress IP of the cluster"
-  value       = azurerm_public_ip.nat.ip_address
+  value       = aws_eip.nat.public_ip
 }

@@ -1,9 +1,9 @@
 terraform {
-  required_version = ">= 1.6.0"
+  required_version = ">= 1.10.0"
   required_providers {
-    azurerm = {
-      source  = "hashicorp/azurerm"
-      version = ">= 4.0"
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 6.0"
     }
   }
 }
@@ -13,36 +13,36 @@ variable "name_prefix" {
   type        = string
 }
 
-variable "resource_group_name" {
-  description = "Resource group to deploy into"
-  type        = string
-}
-
-variable "location" {
-  description = "Azure region"
-  type        = string
-}
-
-variable "subnet_id" {
-  description = "Subnet the node NICs join"
-  type        = string
-}
-
 variable "nodes" {
-  description = "Node name => { role = server|agent, size = VM SKU }. Exactly one server."
+  description = "Node name => { role = server|agent, size = instance type }. Exactly one server."
   type = map(object({
     role = string
     size = string
   }))
 }
 
+variable "public_subnet_id" {
+  description = "Subnet of the server"
+  type        = string
+}
+
+variable "nodes_subnet_id" {
+  description = "Subnet of the agents"
+  type        = string
+}
+
+variable "security_group_id" {
+  description = "Security group attached to every node"
+  type        = string
+}
+
 variable "data_disk_ids" {
-  description = "Node name => managed data disk ID (attached at LUN 0)"
+  description = "Node name => EBS data volume ID"
   type        = map(string)
 }
 
-variable "admin_username" {
-  description = "Admin user on the VMs"
+variable "backup_bucket_arn" {
+  description = "Bucket the server may write etcd snapshots to"
   type        = string
 }
 
@@ -51,150 +51,179 @@ variable "ssh_public_key" {
   type        = string
 }
 
-variable "os_disk_type" {
-  description = "OS disk SKU"
-  type        = string
-  default     = "StandardSSD_LRS"
-}
-
 variable "os_disk_size_gb" {
-  description = "OS disk size"
+  description = "Root volume size"
   type        = number
-  default     = 32
+  default     = 30
 }
 
-variable "auto_shutdown_time" {
-  description = "Daily shutdown time HHMM (null = no auto-shutdown)"
+variable "auto_shutdown_cron" {
+  description = "EventBridge cron (UTC) at which all nodes are stopped, e.g. \"0 19 * * ? *\" (null = never)"
   type        = string
   default     = null
-}
-
-variable "auto_shutdown_timezone" {
-  description = "Windows timezone name for the shutdown schedule"
-  type        = string
-  default     = "UTC"
-}
-
-variable "tags" {
-  description = "Tags applied to all resources"
-  type        = map(string)
-  default     = {}
 }
 
 locals {
   server = one([for k, n in var.nodes : k if n.role == "server"])
 }
 
+# Ubuntu 24.04 LTS, published by Canonical.
+data "aws_ami" "ubuntu" {
+  most_recent = true
+  owners      = ["099720109477"]
+
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"]
+  }
+}
+
+resource "aws_key_pair" "admin" {
+  key_name   = "${var.name_prefix}-admin"
+  public_key = var.ssh_public_key
+}
+
+# The server's identity: it may read/write etcd snapshots in the backup bucket, nothing else.
+# K3s picks these credentials up from instance metadata; nothing is stored on disk.
+resource "aws_iam_role" "server" {
+  name = "${var.name_prefix}-server"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "ec2.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "server_backup" {
+  name = "k3s-snapshots"
+  role = aws_iam_role.server.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["s3:ListBucket", "s3:GetBucketLocation"]
+        Resource = var.backup_bucket_arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+        Resource = "${var.backup_bucket_arn}/*"
+      },
+    ]
+  })
+}
+
+resource "aws_iam_instance_profile" "server" {
+  name = "${var.name_prefix}-server"
+  role = aws_iam_role.server.name
+}
+
+resource "aws_instance" "node" {
+  for_each               = var.nodes
+  ami                    = data.aws_ami.ubuntu.id
+  instance_type          = each.value.size
+  subnet_id              = each.value.role == "server" ? var.public_subnet_id : var.nodes_subnet_id
+  vpc_security_group_ids = [var.security_group_id]
+  key_name               = aws_key_pair.admin.key_name # SSH keys only; Ubuntu images have no password login
+  iam_instance_profile   = each.value.role == "server" ? aws_iam_instance_profile.server.name : null
+  ebs_optimized          = true
+  tags                   = { Name = "${var.name_prefix}-${each.key}", role = each.value.role }
+
+  # IMDSv2 only, and not reachable from inside pods (hop limit 1): a compromised container
+  # cannot borrow the node's AWS credentials.
+  metadata_options {
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 1
+  }
+
+  root_block_device {
+    volume_type = "gp3"
+    volume_size = var.os_disk_size_gb
+    encrypted   = true
+  }
+
+  lifecycle {
+    # A newer Ubuntu AMI must not replace running nodes; unattended-upgrades patches them in place.
+    ignore_changes = [ami]
+  }
+}
+
 # Static public IP for the server: it is the ingress node, the K3s API endpoint and the SSH jump host.
-resource "azurerm_public_ip" "server" {
-  name                = "${var.name_prefix}-server-pip"
-  resource_group_name = var.resource_group_name
-  location            = var.location
-  allocation_method   = "Static"
-  sku                 = "Standard"
-  # Free <label>.<region>.cloudapp.azure.com name, usable for Let's Encrypt without owning a domain.
-  domain_name_label = var.name_prefix
-  tags              = var.tags
+resource "aws_eip" "server" {
+  domain   = "vpc"
+  instance = aws_instance.node[local.server].id
+  tags     = { Name = "${var.name_prefix}-server-eip" }
 }
 
-resource "azurerm_network_interface" "node" {
-  for_each            = var.nodes
-  name                = "${var.name_prefix}-${each.key}-nic"
-  resource_group_name = var.resource_group_name
-  location            = var.location
-  tags                = var.tags
-
-  ip_configuration {
-    name                          = "internal"
-    subnet_id                     = var.subnet_id
-    private_ip_address_allocation = "Dynamic" # stable for the lifetime of the NIC
-    public_ip_address_id          = each.value.role == "server" ? azurerm_public_ip.server.id : null
-  }
+resource "aws_volume_attachment" "data" {
+  for_each    = var.nodes
+  device_name = "/dev/sdf" # shows up as an NVMe device; the Ansible `disks` role finds it by volume ID
+  volume_id   = var.data_disk_ids[each.key]
+  instance_id = aws_instance.node[each.key].id
 }
 
-resource "azurerm_linux_virtual_machine" "node" {
-  for_each                        = var.nodes
-  name                            = "${var.name_prefix}-${each.key}"
-  resource_group_name             = var.resource_group_name
-  location                        = var.location
-  size                            = each.value.size
-  admin_username                  = var.admin_username
-  disable_password_authentication = true
-  network_interface_ids           = [azurerm_network_interface.node[each.key].id]
-  # Nodes are configured over SSH by Ansible only; no VM extensions.
-  allow_extension_operations = false
-  tags                       = merge(var.tags, { role = each.value.role })
-
-  admin_ssh_key {
-    username   = var.admin_username
-    public_key = var.ssh_public_key
-  }
-
-  os_disk {
-    caching              = "ReadWrite"
-    storage_account_type = var.os_disk_type
-    disk_size_gb         = var.os_disk_size_gb
-  }
-
-  source_image_reference {
-    publisher = "Canonical"
-    offer     = "ubuntu-24_04-lts"
-    sku       = "server"
-    # Resolved once at VM creation (no drift); unattended-upgrades keeps it patched afterwards.
-    version = "latest"
-  }
-
-  # The server's identity uploads etcd snapshots to blob storage; no stored credentials.
-  identity {
-    type = "SystemAssigned"
-  }
-
-  boot_diagnostics {}
+# Cost control for dev: stop (not terminate) every node on a schedule. Start them again by hand.
+resource "aws_iam_role" "shutdown" {
+  count = var.auto_shutdown_cron == null ? 0 : 1
+  name  = "${var.name_prefix}-auto-shutdown"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "scheduler.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
 }
 
-resource "azurerm_virtual_machine_data_disk_attachment" "data" {
-  for_each           = var.nodes
-  managed_disk_id    = var.data_disk_ids[each.key]
-  virtual_machine_id = azurerm_linux_virtual_machine.node[each.key].id
-  lun                = 0 # the Ansible `disks` role finds the disk by this LUN
-  caching            = "None"
+resource "aws_iam_role_policy" "shutdown" {
+  count = var.auto_shutdown_cron == null ? 0 : 1
+  name  = "stop-cluster-nodes"
+  role  = aws_iam_role.shutdown[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = "ec2:StopInstances"
+      Resource = [for i in aws_instance.node : i.arn]
+    }]
+  })
 }
 
-resource "azurerm_dev_test_global_vm_shutdown_schedule" "node" {
-  for_each              = var.auto_shutdown_time == null ? {} : var.nodes
-  virtual_machine_id    = azurerm_linux_virtual_machine.node[each.key].id
-  location              = var.location
-  enabled               = true
-  daily_recurrence_time = var.auto_shutdown_time
-  timezone              = var.auto_shutdown_timezone
+resource "aws_scheduler_schedule" "shutdown" {
+  count               = var.auto_shutdown_cron == null ? 0 : 1
+  name                = "${var.name_prefix}-auto-shutdown"
+  schedule_expression = "cron(${var.auto_shutdown_cron})"
 
-  notification_settings {
-    enabled = false
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  target {
+    arn      = "arn:aws:scheduler:::aws-sdk:ec2:stopInstances"
+    role_arn = aws_iam_role.shutdown[0].arn
+    input    = jsonencode({ InstanceIds = [for i in aws_instance.node : i.id] })
   }
 }
 
 output "server_public_ip" {
   description = "Public IP of the server / ingress node"
-  value       = azurerm_public_ip.server.ip_address
-}
-
-output "server_fqdn" {
-  description = "Azure-provided DNS name of the server"
-  value       = azurerm_public_ip.server.fqdn
-}
-
-output "server_principal_id" {
-  description = "Managed identity of the server VM"
-  value       = azurerm_linux_virtual_machine.node[local.server].identity[0].principal_id
+  value       = aws_eip.server.public_ip
 }
 
 output "nodes" {
-  description = "Node name => { vm_name, role, private_ip }"
+  description = "Node name => { name, role, private_ip, data_disk_device }"
   value = {
     for k, n in var.nodes : k => {
-      vm_name    = azurerm_linux_virtual_machine.node[k].name
+      name       = aws_instance.node[k].tags.Name
       role       = n.role
-      private_ip = azurerm_network_interface.node[k].private_ip_address
+      private_ip = aws_instance.node[k].private_ip
+      # Stable NVMe path derived from the volume ID: identical on every boot and instance type.
+      data_disk_device = "/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_${replace(aws_volume_attachment.data[k].volume_id, "-", "")}"
     }
   }
 }

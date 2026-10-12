@@ -2,16 +2,18 @@
 
 All commands run from the repository root. `ENV` defaults to `dev`; add `ENV=prod` for production.
 On a machine without the tools (Windows), prefix with `./toolbox.sh`, e.g. `./toolbox.sh make plan`.
+The toolbox picks up the AWS session of the host (`aws login`).
 
 `export KUBECONFIG=$PWD/.kube/dev.yaml` before using `kubectl`/`helm` by hand.
+The SSH user on every node is `ubuntu`.
 
 ## First deployment, end to end
 
 ```bash
-cp local.mk.example local.mk          # fill in project, region, admin user, your IP, image repo
-az login                               # ./toolbox.sh az login --use-device-code
-make bootstrap                         # once per subscription: remote state
-make plan && make apply                # ~5 min: VNet, NSG, VMs, disks, storage
+cp local.mk.example local.mk          # project, region, your public IP, image repo
+aws login                              # or any other way of getting AWS credentials
+make bootstrap                         # once per account: remote-state bucket
+make plan && make apply                # ~4 min: VPC, security group, instances, disks, bucket
 make configure                         # ~10 min: hardening, disks, K3s; writes .kube/dev.yaml
 kubectl get nodes                      # all Ready
 make secrets                           # age key + encrypted secrets (commit secrets/ and .sops.yaml)
@@ -21,8 +23,9 @@ make deploy
 curl http://$(tofu -chdir=infra/environments/dev output -json stack | jq -r .server_public_ip)/
 ```
 
-To serve HTTPS, set `DOMAIN` (your own name, or the `server_fqdn` printed by `make output`) and
-`ACME_EMAIL` in `local.mk`, then `make deploy` again.
+To serve HTTPS, point a DNS name you control at the server IP, set `DOMAIN` and `ACME_EMAIL` in
+`local.mk`, then `make plan && make apply && make configure` (adds the name to the API
+certificate) and `make deploy` again. Let's Encrypt does not issue for AWS's own `amazonaws.com` names.
 
 ## Deploy a new version
 
@@ -45,7 +48,7 @@ kubectl -n webapp-dev rollout status deployment/webapp
 ```
 
 Infrastructure: revert the commit and `make plan && make apply`. If state itself is damaged,
-restore an earlier blob version of `<env>.tfstate` in the tfstate storage account (versioning is on).
+restore an earlier version of `<env>.tfstate` in the tfstate bucket (versioning is on).
 
 ## Scale
 
@@ -76,10 +79,11 @@ kubectl -n monitoring port-forward svc/kps-alertmanager 9093:9093
 
 Logs: Grafana -> Explore -> Loki -> `{namespace="webapp-dev"}`, or the *Logs / Explorer* dashboard.
 
-Fire a test alert (the app's `/fail` endpoint always returns 500; `AppHigh5xxRate` fires after ~5 min):
+Fire a test alert (the app's `/fail` endpoint always returns 500; `AppHigh5xxRate` goes pending
+within about two minutes and fires after five):
 
 ```bash
-while true; do curl -s -o /dev/null http://<server-ip>/fail; sleep 0.2; done
+while true; do curl -s -o /dev/null http://<server-ip>/fail; sleep 0.3; done
 ```
 
 The always-firing `Watchdog` alert in Alertmanager proves the alerting pipeline itself is alive.
@@ -98,61 +102,57 @@ sops updatekeys secrets/dev/*.enc.yaml           # with the old key still in pla
 # then replace keys.txt with the new key, and update the SOPS_AGE_KEY secret in GitHub
 
 # K3s join token
-ssh <admin>@<server-ip> sudo k3s token rotate    # then: make configure
+ssh ubuntu@<server-ip> sudo k3s token rotate     # then: make configure
 
-# SSH key: replace ~/.ssh/id_ed25519*, then make plan && make apply
-#   NOTE: Azure only applies admin_ssh_key at VM creation - this REPLACES the VMs.
-#   To rotate without rebuilding, add the new key to ~/.ssh/authorized_keys on each node instead.
+# SSH key: the EC2 key pair is only read at instance creation, so changing it in tofu does
+# nothing for running nodes. Add the new public key to ~/.ssh/authorized_keys on each node
+# and remove the old one.
 
 # Registry pull token: update the GHCR_PULL_TOKEN environment secret and re-run the deploy job
 ```
 
 ## Back up and restore the cluster
 
-Snapshots are automatic: K3s writes one every 6 h to
-`/var/lib/rancher/k3s/server/db/snapshots`, and `k3s-backup.timer` copies them hourly to the
-`k3s-snapshots` container of the backup storage account (kept 30 days).
+Snapshots are automatic: every 6 h K3s writes one to `/var/lib/rancher/k3s/server/db/snapshots`
+and uploads it to `s3://<project>-<env>-k3s-backup-<account-id>/<server-name>/` (kept 30 days).
 
 ```bash
-ssh <admin>@<server-ip>
-sudo k3s etcd-snapshot save --name before-change      # on-demand snapshot
-sudo systemctl start k3s-backup.service               # upload now
-sudo journalctl -u k3s-backup.service -n 20           # verify
+ssh ubuntu@<server-ip>
+sudo k3s etcd-snapshot save --name before-change      # on-demand snapshot, also uploaded
+sudo k3s etcd-snapshot ls                              # local and S3 copies
 ```
 
-Restore onto the server (same VM, or a freshly provisioned and configured one):
+Restore onto the server (same instance, or a freshly provisioned and configured one):
 
 ```bash
-# 1. If the snapshot is not on the disk any more, download it (from an allowed admin IP)
-az storage blob download --auth-mode login --account-name <backup-account> \
-  -c k3s-snapshots -n <server-hostname>/<snapshot-file> -f snapshot.db
-scp snapshot.db <admin>@<server-ip>:/tmp/
-
-# 2. On the server
+# On the server. K3s downloads the snapshot from S3 itself (it reads the S3 settings from its config).
 sudo systemctl stop k3s
-sudo k3s server --cluster-reset --cluster-reset-restore-path=/tmp/snapshot.db
+sudo k3s server --cluster-reset --cluster-reset-restore-path=<snapshot-file-name>
 sudo systemctl start k3s
 
-# 3. On every agent
+# On every agent
 sudo systemctl restart k3s-agent
 ```
 
 Etcd snapshots contain Kubernetes objects, not volume data. Prometheus and Loki data live on the
-nodes' managed disks; snapshot those disks in Azure if that history matters.
+nodes' EBS data disks; take EBS snapshots if that history matters.
 
 ## Start dev again after the nightly shutdown
 
 ```bash
-az vm start --ids $(az vm list -g <project>-dev-rg --query "[].id" -o tsv)
+aws ec2 start-instances --instance-ids $(aws ec2 describe-instances \
+  --filters "Name=tag:project,Values=<project>" "Name=tag:environment,Values=dev" \
+            "Name=instance-state-name,Values=stopped" \
+  --query "Reservations[].Instances[].InstanceId" --output text)
 kubectl get nodes        # Ready again after about a minute
 ```
 
 ## Your IP changed and you are locked out
 
-Update `ADMIN_CIDRS` in `local.mk`, then `make plan && make apply`. That updates the NSG and the
-storage firewalls; nothing on the nodes depends on your IP. Better: use a stable CIDR (office or VPN).
+Update `ADMIN_CIDRS` in `local.mk`, then `make plan && make apply`. That updates the security
+group; nothing on the nodes depends on your IP. Better: use a stable CIDR (office or VPN).
 
-## Rebuilt a VM and SSH refuses the host key
+## Rebuilt an instance and SSH refuses the host key
 
 ```bash
 ssh-keygen -R <ip>
@@ -164,13 +164,15 @@ ssh-keygen -R <ip>
 make destroy ENV=dev            # asks for confirmation; removes every resource of the environment
 ```
 
-The remote-state resource group (`<project>-tfstate-rg`) is deliberately not managed by tofu.
-Delete it by hand only when no environment is left: `az group delete -n <project>-tfstate-rg`.
+In dev the backup bucket is emptied and deleted with it; in prod a non-empty bucket blocks the
+destroy on purpose. The remote-state bucket (`<project>-tfstate-<account-id>`) is deliberately not
+managed by tofu: empty and delete it by hand only when no environment is left.
 
 ## Verification status
 
 Tested locally (no cloud needed): `tofu fmt`/`validate`, tflint, checkov, yamllint, ansible-lint,
-playbook syntax check, image build + run + Trivy scan, `helm lint`/`template`, kubeconform, and
-rendering of all three monitoring charts with this repo's values.
-Not yet run against a real subscription: every command above that touches Azure or a live cluster.
+playbook syntax check, image build + run + Trivy scan, `helm lint`/`template`, kubeconform; and
+`scripts/monitoring.sh` + `scripts/deploy.sh` against a local K3s of the production version
+(ingress, HPA, network policy, metrics, logs, dashboards, alert, automatic rollback).
+Not yet run against a real AWS account: every command above that touches AWS or the real nodes.
 Run through "First deployment" once in dev and correct this section.

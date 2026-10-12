@@ -1,7 +1,7 @@
 name: infra
 
 # PR: lint + plan (posted as a comment). main / manual: plan + apply behind the environment's
-# required reviewers. Azure auth is OIDC only (see infra/bootstrap/oidc.sh): no client secret exists.
+# required reviewers. AWS auth is OIDC only (see infra/bootstrap/oidc.sh): no access keys exist.
 on:
   pull_request:
     paths: ["infra/**", ".github/workflows/infra.yml"]
@@ -21,21 +21,15 @@ permissions:
 
 env:
   TOFU_VERSION: 1.13.0
-  ARM_USE_OIDC: "true"
-  ARM_USE_AZUREAD: "true"
-  ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
-  ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
-  ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+  AWS_REGION: ${{ vars.AWS_REGION }}
   TF_IN_AUTOMATION: "true"
   TF_VAR_project_name: ${{ vars.PROJECT }}
-  TF_VAR_location: ${{ vars.LOCATION }}
-  TF_VAR_admin_username: ${{ vars.ADMIN_USER }}
+  TF_VAR_region: ${{ vars.AWS_REGION }}
   TF_VAR_allowed_admin_cidrs: ${{ vars.ADMIN_CIDRS }} # HCL list, e.g. ["203.0.113.7/32"]
   TF_VAR_ssh_public_key: ${{ vars.SSH_PUBLIC_KEY }}
   BACKEND_ARGS: >-
-    -backend-config=resource_group_name=${{ vars.TFSTATE_RESOURCE_GROUP }}
-    -backend-config=storage_account_name=${{ vars.TFSTATE_STORAGE_ACCOUNT }}
-    -backend-config=container_name=tfstate
+    -backend-config=bucket=${{ vars.TFSTATE_BUCKET }}
+    -backend-config=region=${{ vars.AWS_REGION }}
 
 jobs:
   lint:
@@ -70,7 +64,7 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
-      id-token: write # OIDC token for Azure
+      id-token: write # OIDC token for AWS
       pull-requests: write # plan comment
     strategy:
       fail-fast: false
@@ -78,6 +72,10 @@ jobs:
         environment: [dev, prod]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
       - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
         with:
           tofu_version: ${{ env.TOFU_VERSION }}
@@ -118,6 +116,10 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
       - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
         with:
           tofu_version: ${{ env.TOFU_VERSION }}

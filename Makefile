@@ -12,9 +12,9 @@ APP_NAME ?= webapp
 
 # Per-user inputs reach OpenTofu as TF_VAR_*, the scripts as plain environment variables.
 export ENV APP_NAME IMAGE_REPO DOMAIN ACME_EMAIL
+export AWS_REGION                 = $(REGION)
 export TF_VAR_project_name        = $(PROJECT)
-export TF_VAR_location            = $(LOCATION)
-export TF_VAR_admin_username      = $(ADMIN_USER)
+export TF_VAR_region              = $(REGION)
 export TF_VAR_allowed_admin_cidrs = $(ADMIN_CIDRS)
 export TF_VAR_domain              = $(DOMAIN)
 export KUBECONFIG                 = $(CURDIR)/.kube/$(ENV).yaml
@@ -24,8 +24,8 @@ export KUBECONFIG                 = $(CURDIR)/.kube/$(ENV).yaml
 help: ## Show targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/'
 
-bootstrap: ## Create the remote-state storage account (once per subscription)
-	PROJECT=$(PROJECT) LOCATION=$(LOCATION) bash infra/bootstrap/bootstrap.sh
+bootstrap: ## Create the remote-state S3 bucket (once per account)
+	PROJECT=$(PROJECT) REGION=$(REGION) bash infra/bootstrap/bootstrap.sh
 
 init:
 	$(TF) init -input=false -backend-config=backend.hcl
@@ -33,10 +33,10 @@ init:
 plan: init ## Plan infrastructure changes -> tfplan
 	$(TF) plan -input=false -out=tfplan
 
-apply: ## Apply the saved plan (creates billable Azure resources)
+apply: ## Apply the saved plan (creates billable AWS resources)
 	$(TF) apply -input=false tfplan
 
-output: ## Show infrastructure outputs (IPs, FQDN, ...)
+output: ## Show infrastructure outputs (IPs, bucket, ...)
 	$(TF) output
 
 configure: ## Configure the VMs and bring up K3s; writes .kube/$(ENV).yaml

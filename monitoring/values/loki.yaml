@@ -1,5 +1,5 @@
 # Loki as one pod with filesystem storage on the node's data disk: right-sized for a small
-# cluster. Move to object storage (Azure Blob) + SimpleScalable when log volume demands it.
+# cluster. Move to object storage (S3) + SimpleScalable when log volume demands it.
 deploymentMode: SingleBinary
 
 loki:

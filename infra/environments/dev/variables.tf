@@ -1,16 +1,11 @@
-# Per-user values (no defaults): set in local.auto.tfvars (gitignored) or TF_VAR_* in CI.
+# Per-user values (no defaults): set in local.mk -> TF_VAR_*, or TF_VAR_* in CI.
 variable "project_name" {
   description = "Project name"
   type        = string
 }
 
-variable "location" {
-  description = "Azure region"
-  type        = string
-}
-
-variable "admin_username" {
-  description = "Admin user on the VMs"
+variable "region" {
+  description = "AWS region"
   type        = string
 }
 
@@ -38,23 +33,28 @@ variable "domain" {
 }
 
 # Environment sizing: set in terraform.tfvars (committed).
-variable "vnet_cidr" {
-  description = "VNet address space"
+variable "vpc_cidr" {
+  description = "VPC address space"
+  type        = string
+}
+
+variable "public_subnet_cidr" {
+  description = "Public subnet CIDR"
   type        = string
 }
 
 variable "nodes_subnet_cidr" {
-  description = "k3s-nodes subnet CIDR"
+  description = "Private k3s-nodes subnet CIDR"
   type        = string
 }
 
-variable "server_vm_size" {
-  description = "K3s server VM size"
+variable "server_instance_type" {
+  description = "K3s server instance type"
   type        = string
 }
 
-variable "agent_vm_size" {
-  description = "K3s agent VM size"
+variable "agent_instance_type" {
+  description = "K3s agent instance type"
   type        = string
 }
 
@@ -73,14 +73,8 @@ variable "agent_data_disk_gb" {
   type        = number
 }
 
-variable "auto_shutdown_time" {
-  description = "Daily shutdown HHMM UTC (null = never)"
+variable "auto_shutdown_cron" {
+  description = "EventBridge cron (UTC) at which all nodes are stopped (null = never)"
   type        = string
   default     = null
-}
-
-variable "enable_key_vault" {
-  description = "Create an optional Key Vault"
-  type        = bool
-  default     = false
 }

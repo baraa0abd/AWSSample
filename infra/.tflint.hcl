@@ -3,13 +3,8 @@ plugin "terraform" {
   preset  = "recommended"
 }
 
-plugin "azurerm" {
+plugin "aws" {
   enabled = true
-  version = "0.32.0"
-  source  = "github.com/terraform-linters/tflint-ruleset-azurerm"
-}
-
-# Environments must be destroyable (`make destroy`); prevent_destroy cannot be toggled per env.
-rule "azurerm_resources_missing_prevent_destroy" {
-  enabled = false
+  version = "0.49.0"
+  source  = "github.com/terraform-linters/tflint-ruleset-aws"
 }

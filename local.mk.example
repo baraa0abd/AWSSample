@@ -1,10 +1,9 @@
 # Copy to local.mk (gitignored) and fill in. Nothing here is secret.
 PROJECT     = <PROJECT_NAME>
-LOCATION    = <AZURE_REGION>
-ADMIN_USER  = <ADMIN_USER>
+REGION      = <AWS_REGION>
 ADMIN_CIDRS = ["<YOUR_PUBLIC_IP>/32"]
 IMAGE_REPO  = ghcr.io/<OWNER>/webapp
-# Optional: enables TLS via cert-manager + Let's Encrypt. `make output` prints a free
-# <project>-<env>.<region>.cloudapp.azure.com name you can use here.
+# Optional: enables TLS via cert-manager + Let's Encrypt. Needs a DNS name you control
+# pointing at the server IP printed by `make output`.
 # DOMAIN     = <OPTIONAL_DOMAIN>
 # ACME_EMAIL = you@example.com

@@ -1,9 +1,9 @@
 terraform {
-  required_version = ">= 1.6.0"
+  required_version = ">= 1.10.0"
   required_providers {
-    azurerm = {
-      source  = "hashicorp/azurerm"
-      version = ">= 4.0"
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 6.0"
     }
     local = {
       source  = "hashicorp/local"
@@ -30,14 +30,15 @@ variable "environment" {
   }
 }
 
-variable "location" {
-  description = "Azure region"
+variable "region" {
+  description = "AWS region (also where K3s stores its snapshots)"
   type        = string
 }
 
-variable "admin_username" {
-  description = "Admin user on the VMs"
+variable "availability_zone_suffix" {
+  description = "Zone letter within the region; change it if the instance types are unavailable there"
   type        = string
+  default     = "a"
 }
 
 variable "ssh_public_key_path" {
@@ -67,29 +68,28 @@ variable "domain" {
   default     = ""
 }
 
-variable "vnet_cidr" {
-  description = "VNet address space"
+variable "vpc_cidr" {
+  description = "VPC address space"
+  type        = string
+}
+
+variable "public_subnet_cidr" {
+  description = "Public subnet CIDR (server, NAT gateway)"
   type        = string
 }
 
 variable "nodes_subnet_cidr" {
-  description = "k3s-nodes subnet CIDR"
+  description = "Private k3s-nodes subnet CIDR (agents)"
   type        = string
 }
 
-variable "management_subnet_cidr" {
-  description = "Optional management subnet CIDR (null = not created)"
-  type        = string
-  default     = null
-}
-
-variable "server_vm_size" {
-  description = "VM size of the K3s server"
+variable "server_instance_type" {
+  description = "Instance type of the K3s server"
   type        = string
 }
 
-variable "agent_vm_size" {
-  description = "VM size of the K3s agents"
+variable "agent_instance_type" {
+  description = "Instance type of the K3s agents"
   type        = string
 }
 
@@ -114,16 +114,10 @@ variable "agent_data_disk_gb" {
   default     = 32
 }
 
-variable "auto_shutdown_time" {
-  description = "Daily VM shutdown time HHMM UTC (null = never)"
+variable "auto_shutdown_cron" {
+  description = "EventBridge cron (UTC) at which all nodes are stopped (null = never)"
   type        = string
   default     = null
-}
-
-variable "enable_key_vault" {
-  description = "Create an optional Key Vault"
-  type        = bool
-  default     = false
 }
 
 variable "inventory_path" {

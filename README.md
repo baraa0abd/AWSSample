@@ -1,10 +1,11 @@
-# infraAzure
+# K3s platform on AWS
 
-Production-style infrastructure and delivery on Azure, entirely as code:
+Production-style infrastructure and delivery on AWS, entirely as code:
 
-**OpenTofu** provisions VMs -> **Ansible** builds a K3s cluster -> **Docker** builds a scanned image
--> **Helm** deploys it with ingress, autoscaling and network policies -> **Prometheus, Grafana,
-Loki and Alloy** observe it -> **GitHub Actions** automates it with OIDC (no stored cloud secrets).
+**OpenTofu** provisions EC2 instances -> **Ansible** builds a K3s cluster -> **Docker** builds a
+scanned image -> **Helm** deploys it with ingress, autoscaling and network policies ->
+**Prometheus, Grafana, Loki and Alloy** observe it -> **GitHub Actions** automates it with OIDC
+(no stored cloud credentials).
 
 - Design: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and decisions in [docs/ADR.md](docs/ADR.md)
 - Operations: [docs/RUNBOOK.md](docs/RUNBOOK.md)
@@ -12,8 +13,8 @@ Loki and Alloy** observe it -> **GitHub Actions** automates it with OIDC (no sto
 ## Quick start
 
 ```bash
-cp local.mk.example local.mk     # project name, region, admin user, your public IP, image repo
-az login
+cp local.mk.example local.mk     # project name, region, your public IP, image repo
+aws login
 make bootstrap                   # remote state (once)
 make plan && make apply          # infrastructure  (billable)
 make configure                   # K3s cluster
@@ -24,7 +25,7 @@ PUSH=1 make build && make deploy # the app
 `make help` lists every target. No tools installed, or on Windows? Everything except `build` runs
 in a container with pinned versions: `./toolbox.sh make plan`.
 
-Prerequisites when running natively: OpenTofu >= 1.6 (or Terraform), Azure CLI, Ansible
+Prerequisites when running natively: OpenTofu >= 1.10 (or Terraform), AWS CLI v2, Ansible
 (`pip install -r ansible/requirements.txt && ansible-galaxy collection install -r ansible/requirements.yml`),
 Docker, kubectl, Helm 3, sops, age, make, jq. An SSH key at `~/.ssh/id_ed25519`.
 
@@ -53,10 +54,9 @@ Docker, kubectl, Helm 3, sops, age, make, jq. An SSH key at `~/.ssh/id_ed25519`.
 
 ## CI setup (once)
 
-1. `PROJECT=<project> GITHUB_REPO=<owner>/<repo> bash infra/bootstrap/oidc.sh` and set the three
-   printed values as repository **variables**.
-2. More repository variables: `PROJECT`, `LOCATION`, `ADMIN_USER`, `ADMIN_CIDRS` (HCL list),
-   `SSH_PUBLIC_KEY`, `TFSTATE_RESOURCE_GROUP`, `TFSTATE_STORAGE_ACCOUNT` (both printed by `make bootstrap`).
+1. `PROJECT=<project> GITHUB_REPO=<owner>/<repo> bash infra/bootstrap/oidc.sh` and set the two
+   printed values (`AWS_ROLE_ARN`, `TFSTATE_BUCKET`) as repository **variables**.
+2. More repository variables: `PROJECT`, `AWS_REGION`, `ADMIN_CIDRS` (HCL list), `SSH_PUBLIC_KEY`.
 3. Create GitHub environments `dev` and `prod`; add **required reviewers** (that is the manual
    approval for `tofu apply` and for production deploys).
 4. Per environment, secrets `KUBECONFIG_B64` (`base64 -w0 .kube/<env>.yaml`), `SOPS_AGE_KEY` (content

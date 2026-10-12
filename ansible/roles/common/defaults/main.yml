@@ -9,11 +9,11 @@ common_packages:
   - unattended-upgrades
   - apt-listchanges
 
-# Same ports as the NSG. Source filtering for 22/6443 is done by the NSG only.
+# Same ports as the security group, which alone does source filtering for 22/6443.
 common_open_tcp_ports: ["22", "6443", "80", "443"]
-# Fully trusted sources: the VNet (node-to-node) and the cluster's pod and service networks.
+# Fully trusted sources: the VPC (node-to-node) and the cluster's pod and service networks.
 common_trusted_cidrs:
-  - "{{ vnet_cidr }}"
+  - "{{ network_cidr }}"
   - "{{ k3s_pod_cidr }}"
   - "{{ k3s_service_cidr }}"
 

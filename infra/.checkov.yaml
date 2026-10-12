@@ -4,15 +4,12 @@ quiet: true
 compact: true
 skip-path: [.terraform]
 skip-check:
-  - CKV2_AZURE_31  # false positive: the NSG is attached in modules/security, checkov does not follow module outputs
-  - CKV_AZURE_119  # the server NIC has a public IP by design: it is the ingress node and SSH jump host
-  - CKV_AZURE_160  # port 80 is open for ACME HTTP-01 challenges and HTTP->HTTPS traffic
-  - CKV_AZURE_59   # public endpoint stays on, but the storage firewall is default-deny (subnet + admin IPs only)
-  - CKV_AZURE_189  # same for Key Vault: default-deny firewall, admin IPs only
-  - CKV2_AZURE_33 # service endpoint + firewall instead of a private endpoint (cost; revisit for prod)
-  - CKV2_AZURE_32  # same for Key Vault
-  - CKV2_AZURE_1   # platform-managed encryption keys; no CMK requirement
-  - CKV_AZURE_93   # same for managed disks
-  - CKV_AZURE_206  # LRS: snapshots also exist on the server disk; GRS is a prod cost decision
-  - CKV_AZURE_33   # no queue service in use
-  - CKV2_AZURE_21  # storage diagnostic logs belong to the Azure Monitor integration (next steps)
+  - CKV2_AWS_5   # false positive: the security group is attached in modules/compute, checkov does not follow module outputs
+  - CKV2_AWS_11  # VPC flow logs belong to the CloudWatch integration (next steps); they cost per GB
+  - CKV_AWS_126  # detailed (1-minute) EC2 monitoring is paid; node-exporter already gives 30 s resolution
+  - CKV_AWS_145  # S3-managed encryption keys (SSE-S3); no customer-managed-key requirement
+  - CKV_AWS_189  # same for EBS volumes: encrypted with the AWS-managed key
+  - CKV_AWS_297  # same for the shutdown schedule, which contains only instance IDs
+  - CKV_AWS_144  # no cross-region replication: snapshots also exist on the server disk; a prod cost decision
+  - CKV_AWS_18   # S3 access logging needs a second bucket; revisit with the CloudWatch integration
+  - CKV2_AWS_62  # nothing consumes bucket event notifications

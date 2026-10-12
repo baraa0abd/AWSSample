@@ -8,9 +8,9 @@ ARG HELM_VERSION=3.19.0
 ARG KUBECTL_VERSION=1.36.5
 ARG SOPS_VERSION=3.13.3
 ARG AGE_VERSION=1.3.2
-ARG AZURE_CLI_VERSION=2.91.0
+ARG AWS_CLI_VERSION=2.37.9
 
-RUN apt-get update && apt-get install -y --no-install-recommends openssh-client git make curl jq \
+RUN apt-get update && apt-get install -y --no-install-recommends openssh-client git make curl jq unzip \
     && rm -rf /var/lib/apt/lists/*
 
 RUN set -eux; cd /tmp; \
@@ -19,10 +19,12 @@ RUN set -eux; cd /tmp; \
     curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl"; \
     curl -fsSL -o /usr/local/bin/sops "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.amd64"; \
     curl -fsSL "https://github.com/FiloSottile/age/releases/download/v${AGE_VERSION}/age-v${AGE_VERSION}-linux-amd64.tar.gz" | tar -xz --strip-components=1 -C /usr/local/bin age/age age/age-keygen; \
+    curl -fsSL -o awscli.zip "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-${AWS_CLI_VERSION}.zip"; \
+    unzip -q awscli.zip && ./aws/install && rm -rf aws awscli.zip; \
     chmod +x /usr/local/bin/*
 
 COPY requirements.txt requirements.yml /tmp/
-RUN pip install --no-cache-dir -r /tmp/requirements.txt "azure-cli==${AZURE_CLI_VERSION}" \
+RUN pip install --no-cache-dir -r /tmp/requirements.txt \
     && ansible-galaxy collection install -r /tmp/requirements.yml -p /usr/share/ansible/collections
 
 # A repo bind-mounted from Windows is world-writable and has no file modes:

@@ -57,7 +57,7 @@
       maxretry = 5
       bantime = 1h
       # Never ban the cluster itself (Ansible reaches agents through the server).
-      ignoreip = 127.0.0.1/8 {{ vnet_cidr }}
+      ignoreip = 127.0.0.1/8 {{ network_cidr }}
     owner: root
     group: root
     mode: "0644"
@@ -69,8 +69,8 @@
     enabled: true
     state: started
 
-# UFW opens the same ports as the NSG, so a mistake in either layer is not enough to expose
-# anything else. *Who* may reach SSH and the API is decided in one place only (the NSG):
+# UFW opens the same ports as the security group, so a mistake in either layer is not enough to expose
+# anything else. *Who* may reach SSH and the API is decided in one place only (the security group):
 # duplicating the admin IP list here would lock you out of the nodes when your IP changes.
 - name: Set UFW default policies
   community.general.ufw:
@@ -84,7 +84,7 @@
   loop_control:
     label: "{{ item.direction }} {{ item.policy }}"
 
-- name: Allow all traffic from the VNet and cluster networks
+- name: Allow all traffic from the VPC and cluster networks
   community.general.ufw:
     rule: allow
     from_ip: "{{ item }}"
